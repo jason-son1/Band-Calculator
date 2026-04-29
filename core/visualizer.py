@@ -24,22 +24,27 @@ LAYOUT_DEFAULTS = dict(
 def plot_1d_bands(k_values, eigenvalues, k_ticks, k_labels, title="1D Band Structure"):
     fig = go.Figure()
 
-    fig.add_trace(go.Scatter(
-        x=k_values, y=eigenvalues[:, 0], mode='lines', name='E₋ (Lower)',
-        line=dict(color=BAND_COLORS['lower'], width=2.5),
-        hovertemplate='k = %{x:.3f}<br>E = %{y:.4f}<extra>E₋</extra>',
-    ))
-    fig.add_trace(go.Scatter(
-        x=k_values, y=eigenvalues[:, 1], mode='lines', name='E₊ (Upper)',
-        line=dict(color=BAND_COLORS['upper'], width=2.5),
-        hovertemplate='k = %{x:.3f}<br>E = %{y:.4f}<extra>E₊</extra>',
-    ))
-    fig.add_trace(go.Scatter(
-        x=np.concatenate([k_values, k_values[::-1]]),
-        y=np.concatenate([eigenvalues[:, 1], eigenvalues[::-1, 0]]),
-        fill='toself', fillcolor=BAND_COLORS['gap'],
-        line=dict(width=0), showlegend=False, hoverinfo='skip',
-    ))
+    N = eigenvalues.shape[1]
+    import plotly.express as px
+    # Generate distinct colors for N bands
+    colors = px.colors.sample_colorscale("Rainbow", [i/(N-1) if N > 1 else 0.5 for i in range(N)])
+
+    for i in range(N):
+        fig.add_trace(go.Scatter(
+            x=k_values, y=eigenvalues[:, i], mode='lines', name=f'E_{i}',
+            line=dict(color=colors[i], width=2.5),
+            hovertemplate='k = %{x:.3f}<br>E = %{y:.4f}<extra>E_' + str(i) + '</extra>',
+        ))
+
+    # Add a filled area for the middle gap if N is even
+    if N % 2 == 0:
+        mid = N // 2
+        fig.add_trace(go.Scatter(
+            x=np.concatenate([k_values, k_values[::-1]]),
+            y=np.concatenate([eigenvalues[:, mid], eigenvalues[::-1, mid-1]]),
+            fill='toself', fillcolor=BAND_COLORS['gap'],
+            line=dict(width=0), showlegend=False, hoverinfo='skip',
+        ))
 
     for tick in k_ticks:
         fig.add_vline(x=tick, line_dash="dot", line_color="rgba(148,163,184,0.4)", line_width=1)
@@ -56,22 +61,23 @@ def plot_1d_bands(k_values, eigenvalues, k_ticks, k_labels, title="1D Band Struc
     return fig
 
 
-def plot_2d_surface(kx_mesh, ky_mesh, e_plus, e_minus, title="2D Energy Surface"):
+def plot_2d_surface(kx_mesh, ky_mesh, eigenvalues_mesh, title="2D Energy Surface"):
     fig = go.Figure()
 
-    lower_cs = [[0, '#581c87'], [0.25, '#7c3aed'], [0.5, '#a855f7'], [0.75, '#c084fc'], [1, '#e9d5ff']]
-    upper_cs = [[0, '#083344'], [0.25, '#0891b2'], [0.5, '#06b6d4'], [0.75, '#67e8f9'], [1, '#cffafe']]
-
-    fig.add_trace(go.Surface(
-        x=kx_mesh, y=ky_mesh, z=e_minus, name='E₋',
-        colorscale=lower_cs, opacity=0.92, showscale=False,
-        hovertemplate='kₓ=%{x:.2f}<br>kᵧ=%{y:.2f}<br>E₋=%{z:.4f}<extra></extra>',
-    ))
-    fig.add_trace(go.Surface(
-        x=kx_mesh, y=ky_mesh, z=e_plus, name='E₊',
-        colorscale=upper_cs, opacity=0.92, showscale=False,
-        hovertemplate='kₓ=%{x:.2f}<br>kᵧ=%{y:.2f}<br>E₊=%{z:.4f}<extra></extra>',
-    ))
+    N = len(eigenvalues_mesh)
+    import plotly.express as px
+    
+    for i in range(N):
+        # Create a monochromatic colorscale for each band based on Rainbow
+        base_color = px.colors.sample_colorscale("Rainbow", i/(N-1) if N > 1 else 0.5)[0]
+        # Very simple custom colorscale using the base color and a lighter version
+        cs = [[0, 'rgba(14,17,23,0.8)'], [1, base_color]]
+        
+        fig.add_trace(go.Surface(
+            x=kx_mesh, y=ky_mesh, z=eigenvalues_mesh[i], name=f'E_{i}',
+            colorscale=cs, opacity=0.92, showscale=False,
+            hovertemplate='kₓ=%{x:.2f}<br>kᵧ=%{y:.2f}<br>E=' + str(i) + '=%{z:.4f}<extra></extra>',
+        ))
 
     axis_style = dict(backgroundcolor='rgba(14,17,23,0.9)', gridcolor='rgba(148,163,184,0.15)', showbackground=True)
     fig.update_layout(

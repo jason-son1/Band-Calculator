@@ -188,7 +188,6 @@ def build_lambdified_funcs(expressions: list, free_params: list):
     Returns:
         List of 4 callable functions (one per d-component)
     """
-    # Build argument list: k_x, k_y, k_z first, then free params
     args = [K_SYMBOLS['k_x'], K_SYMBOLS['k_y'], K_SYMBOLS['k_z']] + list(free_params)
 
     funcs = []
@@ -201,3 +200,31 @@ def build_lambdified_funcs(expressions: list, free_params: list):
             funcs.append(f)
 
     return funcs
+
+
+def build_lambdified_matrix_funcs(expr_matrix: list, free_params: list):
+    """
+    Convert a 2D list of SymPy expressions to a 2D list of fast NumPy-callable functions.
+
+    Args:
+        expr_matrix: NxN list of SymPy expressions
+        free_params: List of free parameter Symbols
+
+    Returns:
+        NxN list of callable functions
+    """
+    args = [K_SYMBOLS['k_x'], K_SYMBOLS['k_y'], K_SYMBOLS['k_z']] + list(free_params)
+    
+    N = len(expr_matrix)
+    func_matrix = [[None for _ in range(N)] for _ in range(N)]
+    
+    for i in range(N):
+        for j in range(N):
+            expr = expr_matrix[i][j]
+            if expr is None or expr == 0:
+                func_matrix[i][j] = lambda *a: 0.0
+            else:
+                f = lambdify(args, expr, modules=['numpy'])
+                func_matrix[i][j] = f
+                
+    return func_matrix

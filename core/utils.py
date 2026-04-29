@@ -41,11 +41,11 @@ def _build_k_path_from_segments(segments, n_points):
 
 def get_k_path_square(n_points: int = 200):
     """
-    Generate k-path along Γ → X → M → Γ for a 2D square lattice.
+    Generate k-path along Γ → X → M → Γ for a 2D square lattice (z=0).
     """
-    Gamma = np.array([0.0, 0.0])
-    X = np.array([np.pi, 0.0])
-    M = np.array([np.pi, np.pi])
+    Gamma = np.array([0.0, 0.0, 0.0])
+    X = np.array([np.pi, 0.0, 0.0])
+    M = np.array([np.pi, np.pi, 0.0])
 
     segments = [
         (Gamma, X, "Γ", "X"),
@@ -60,7 +60,7 @@ def get_k_path_1d(n_points: int = 200):
     Generate 1D k-path: -π → 0 → π.
     """
     k_x = np.linspace(-np.pi, np.pi, n_points)
-    k_points = k_x[:, None]  # shape (N, 1)
+    k_points = np.column_stack([k_x, np.zeros_like(k_x), np.zeros_like(k_x)])  # shape (N, 3)
     k_ticks = [-np.pi, 0.0, np.pi]
     k_labels = ["-π", "0", "π"]
 
@@ -69,11 +69,11 @@ def get_k_path_1d(n_points: int = 200):
 
 def get_k_path_hexagonal(n_points: int = 200):
     """
-    Generate k-path along Γ → M → K → Γ for a 2D hexagonal lattice.
+    Generate k-path along Γ → M → K → Γ for a 2D hexagonal lattice (z=0).
     """
-    Gamma = np.array([0.0, 0.0])
-    M_pt = np.array([np.pi, np.pi / np.sqrt(3)])
-    K_pt = np.array([4 * np.pi / 3, 0.0])
+    Gamma = np.array([0.0, 0.0, 0.0])
+    M_pt = np.array([np.pi, np.pi / np.sqrt(3), 0.0])
+    K_pt = np.array([4 * np.pi / 3, 0.0, 0.0])
 
     segments = [
         (Gamma, M_pt, "Γ", "M"),
@@ -85,16 +85,16 @@ def get_k_path_hexagonal(n_points: int = 200):
 
 # ─── High-symmetry point library ─────────────────────────────────────
 HIGH_SYMMETRY_POINTS = {
-    "Γ": (0.0, 0.0),
-    "X": (np.pi, 0.0),
-    "Y": (0.0, np.pi),
-    "M": (np.pi, np.pi),
-    "K": (4 * np.pi / 3, 0.0),
-    "K'": (2 * np.pi / 3, 2 * np.pi / np.sqrt(3)),
-    "M_hex": (np.pi, np.pi / np.sqrt(3)),
-    "R": (np.pi, np.pi),
-    "S": (np.pi / 2, np.pi / 2),
-    "Z": (0.0, 0.0),  # alias for Γ in some conventions
+    "Γ": (0.0, 0.0, 0.0),
+    "X": (np.pi, 0.0, 0.0),
+    "Y": (0.0, np.pi, 0.0),
+    "Z": (0.0, 0.0, np.pi),
+    "M": (np.pi, np.pi, 0.0),
+    "K": (4 * np.pi / 3, 0.0, 0.0),
+    "K'": (2 * np.pi / 3, 2 * np.pi / np.sqrt(3), 0.0),
+    "M_hex": (np.pi, np.pi / np.sqrt(3), 0.0),
+    "R": (np.pi, np.pi, np.pi),
+    "S": (np.pi / 2, np.pi / 2, 0.0),
 }
 
 
@@ -119,8 +119,8 @@ def get_k_path_custom(point_sequence: list, n_points: int = 200):
     for i in range(len(point_sequence) - 1):
         p1 = point_sequence[i]
         p2 = point_sequence[i + 1]
-        start = np.array([p1["kx"], p1["ky"]])
-        end = np.array([p2["kx"], p2["ky"]])
+        start = np.array([p1["kx"], p1["ky"], p1.get("kz", 0.0)])
+        end = np.array([p2["kx"], p2["ky"], p2.get("kz", 0.0)])
         segments.append((start, end, p1["label"], p2["label"]))
 
     return _build_k_path_from_segments(segments, n_points)

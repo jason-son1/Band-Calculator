@@ -9,9 +9,13 @@ import numpy as np
 from core.parser import (
     parse_expression, extract_free_params,
     detect_dimensionality, build_lambdified_funcs,
+    build_lambdified_matrix_funcs,
     FUNCTION_REFERENCE,
 )
-from core.band_calculator import compute_eigenvalues_1d, compute_eigenvalues_2d
+from core.band_calculator import (
+    compute_eigenvalues_1d, compute_eigenvalues_2d,
+    compute_eigenvalues_1d_nxn, compute_eigenvalues_2d_nxn
+)
 from core.visualizer import plot_1d_bands, plot_2d_surface
 from core.presets import PRESETS
 from core.utils import (
@@ -36,6 +40,11 @@ if "d0" not in st.session_state:
     st.session_state["dz"] = default_preset["dz"]
     st.session_state["_last_preset"] = "QWZ (Qi-Wu-Zhang)"
     st.session_state["kpath"] = default_preset.get("k_path", "square")
+
+if "ui_mode" not in st.session_state:
+    st.session_state["ui_mode"] = "2x2 (Pauli 방식)"
+if "matrix_N" not in st.session_state:
+    st.session_state["matrix_N"] = 4
 
 # ─── Custom CSS ──────────────────────────────────────────────────────
 st.markdown("""
@@ -205,10 +214,12 @@ def _on_preset_change():
 # ─── Formula Editor Dialog ───────────────────────────────────────────
 @st.dialog("📐 Hamiltonian 수식 편집기", width="large")
 def _formula_editor_dialog():
-    """Full-screen modal dialog for editing d-component formulas."""
-    st.markdown(
-        r"$H(\mathbf{k}) = d_0 \sigma_0 + d_x \sigma_x + d_y \sigma_y + d_z \sigma_z$"
-    )
+    """Full-screen modal dialog for editing formulas."""
+    if st.session_state["ui_mode"] == "2x2 (Pauli 방식)":
+        st.markdown(r"$H(\mathbf{k}) = d_0 \sigma_0 + d_x \sigma_x + d_y \sigma_y + d_z \sigma_z$")
+    else:
+        st.markdown(rf"$H(\mathbf{{k}})$: {st.session_state['matrix_N']} × {st.session_state['matrix_N']} Hermitian Matrix")
+    
     st.markdown("---")
 
     # Reference panel at the top
@@ -223,26 +234,49 @@ def _formula_editor_dialog():
 
     st.markdown("")
 
-    # Large text areas for each d-component
-    components = [
-        ("d₀(k)", "d0", "σ₀ 성분 — 에너지 오프셋. 양 밴드를 동시에 이동."),
-        ("dₓ(k)", "dx", "σₓ 성분 — 해밀토니안의 off-diagonal real part."),
-        ("dᵧ(k)", "dy", "σᵧ 성분 — 해밀토니안의 off-diagonal imaginary part."),
-        ("d_z(k)", "dz", "σ_z 성분 — 밴드 갭을 결정하는 diagonal 성분."),
-    ]
-
     new_vals = {}
-    for label, key, help_text in components:
-        st.markdown(f"#### {label}")
-        st.caption(help_text)
-        new_vals[key] = st.text_area(
-            label,
-            value=st.session_state.get(key, "0"),
-            height=68,
-            key=f"dialog_{key}",
-            placeholder=f"{label} 수식을 입력하세요",
-            label_visibility="collapsed",
-        )
+    
+    if st.session_state["ui_mode"] == "2x2 (Pauli 방식)":
+        components = [
+            ("d₀(k)", "d0", "σ₀ 성분 — 에너지 오프셋. 양 밴드를 동시에 이동."),
+            ("dₓ(k)", "dx", "σₓ 성분 — 해밀토니안의 off-diagonal real part."),
+            ("dᵧ(k)", "dy", "σᵧ 성분 — 해밀토니안의 off-diagonal imaginary part."),
+            ("d_z(k)", "dz", "σ_z 성분 — 밴드 갭을 결정하는 diagonal 성분."),
+        ]
+        for label, key, help_text in components:
+            st.markdown(f"#### {label}")
+            st.caption(help_text)
+            new_vals[key] = st.text_area(
+                label,
+                value=st.session_state.get(key, "0"),
+                height=68,
+                key=f"dialog_{key}",
+                placeholder=f"{label} 수식을 입력하세요",
+                label_visibility="collapsed",
+            )
+    else:
+        N = st.session_state["matrix_N"]
+        st.markdown("#### 우상단(Upper Triangular) 요소 입력")
+        st.caption("대각선 및 우상단 요소를 입력하세요. 좌하단은 켤레복소수로 자동 처리됩니다.")
+        
+        for i in range(N):
+            cols = st.columns(N)
+            for j in range(N):
+                with cols[j]:
+                    if j >= i:
+                        key = f"h_{i}_{j}"
+                        new_vals[key] = st.text_input(
+                            f"H_{i+1},{j+1}",
+                            value=st.session_state.get(key, "0" if i!=j else "0"),
+                            key=f"dialog_{key}",
+                        )
+                    else:
+                        st.text_input(
+                            f"H_{i+1},{j+1}",
+                            value=f"(H_{j+1},{i+1})*",
+                            disabled=True,
+                            key=f"dialog_disabled_{i}_{j}"
+                        )
 
     st.markdown("")
     col_ok, col_cancel = st.columns(2)
@@ -252,7 +286,7 @@ def _formula_editor_dialog():
                 st.session_state[key] = val
             # Reset params since formulas changed
             for k in list(st.session_state.keys()):
-                if k.startswith("param_") or k.startswith("paramnum_") or k.startswith("pval_"):
+                if k.startswith("param_") or k.startswith("paramnum_") or k.startswith("pval_") or k.startswith("ni_") or k.startswith("sl_"):
                     del st.session_state[k]
             st.rerun()
     with col_cancel:
@@ -262,42 +296,54 @@ def _formula_editor_dialog():
 
 # ─── Sidebar ─────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("### 🧩 Model Selection")
-
-    preset_name = st.selectbox(
-        "프리셋 모델",
-        options=list(PRESETS.keys()),
-        index=list(PRESETS.keys()).index(st.session_state.get("_last_preset", "QWZ (Qi-Wu-Zhang)")),
-        key="preset_select",
-        on_change=_on_preset_change,
-        help="프리셋을 선택하면 수식과 k-경로가 자동 설정됩니다.",
+    st.markdown("### ⚙️ UI Mode")
+    ui_mode = st.radio(
+        "해밀토니안 입력 방식",
+        ["2x2 (Pauli 방식)", "N x N (Custom 방식)"],
+        key="ui_mode",
     )
-    preset = PRESETS[preset_name]
+    
+    if ui_mode == "N x N (Custom 방식)":
+        matrix_N = st.number_input("행렬 크기 (N)", min_value=2, max_value=10, value=st.session_state.get("matrix_N", 4), step=1, key="matrix_N")
+    
+    st.markdown("### 🧩 Model Selection")
+    
+    if ui_mode == "2x2 (Pauli 방식)":
+        preset_name = st.selectbox(
+            "프리셋 모델",
+            options=list(PRESETS.keys()),
+            index=list(PRESETS.keys()).index(st.session_state.get("_last_preset", "QWZ (Qi-Wu-Zhang)")),
+            key="preset_select",
+            on_change=_on_preset_change,
+            help="프리셋을 선택하면 수식과 k-경로가 자동 설정됩니다.",
+        )
+        preset = PRESETS[preset_name]
 
-    if preset["description"]:
-        st.markdown(f'<div class="preset-desc">{preset["description"]}</div>', unsafe_allow_html=True)
+        if preset["description"]:
+            st.markdown(f'<div class="preset-desc">{preset["description"]}</div>', unsafe_allow_html=True)
+    else:
+        preset_name = "Custom N x N"
+        preset = {"params": {}}
 
     st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 
     # ─── Hamiltonian Input ────────────────────────────────────────
     st.markdown("### 📐 Hamiltonian H(k)")
-    st.markdown(r"$H(\mathbf{k}) = d_0 \sigma_0 + d_x \sigma_x + d_y \sigma_y + d_z \sigma_z$")
-
-    # Formula cards showing current values
-    d_labels = [
-        ("d₀(k)", "d0"),
-        ("dₓ(k)", "dx"),
-        ("dᵧ(k)", "dy"),
-        ("d_z(k)", "dz"),
-    ]
-    for label, key in d_labels:
-        current_val = st.session_state.get(key, "0")
-        st.markdown(f"""
-        <div class="formula-card">
-            <div class="formula-label">{label}</div>
-            <div class="formula-expr">{current_val if current_val else '0'}</div>
-        </div>
-        """, unsafe_allow_html=True)
+    
+    if ui_mode == "2x2 (Pauli 방식)":
+        st.markdown(r"$H(\mathbf{k}) = d_0 \sigma_0 + d_x \sigma_x + d_y \sigma_y + d_z \sigma_z$")
+        d_labels = [("d₀(k)", "d0"), ("dₓ(k)", "dx"), ("dᵧ(k)", "dy"), ("d_z(k)", "dz")]
+        for label, key in d_labels:
+            current_val = st.session_state.get(key, "0")
+            st.markdown(f"""
+            <div class="formula-card">
+                <div class="formula-label">{label}</div>
+                <div class="formula-expr">{current_val if current_val else '0'}</div>
+            </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.markdown(f"**{matrix_N} × {matrix_N} Hermitian Matrix**")
+        st.markdown("<span style='color:#a5b4fc; font-size: 0.85rem;'>✏️ '수식 편집기 열기'를 눌러 행렬 요소를 입력하세요.</span>", unsafe_allow_html=True)
 
     # Open the dialog editor
     if st.button("✏️ 수식 편집기 열기", use_container_width=True, type="primary"):
@@ -306,17 +352,30 @@ with st.sidebar:
     st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 
     # ─── Parse expressions ────────────────────────────────────────
-    d0_str = st.session_state.get("d0", "0")
-    dx_str = st.session_state.get("dx", "0")
-    dy_str = st.session_state.get("dy", "0")
-    dz_str = st.session_state.get("dz", "0")
-
     parse_error = None
     expressions = []
+    flat_expressions = [] # For parameter extraction
+
     try:
-        for label, expr_str in [("d₀", d0_str), ("dₓ", dx_str), ("dᵧ", dy_str), ("d_z", dz_str)]:
-            expr = parse_expression(expr_str if expr_str else "0")
-            expressions.append(expr)
+        if ui_mode == "2x2 (Pauli 방식)":
+            d0_str = st.session_state.get("d0", "0")
+            dx_str = st.session_state.get("dx", "0")
+            dy_str = st.session_state.get("dy", "0")
+            dz_str = st.session_state.get("dz", "0")
+            
+            for label, expr_str in [("d₀", d0_str), ("dₓ", dx_str), ("dᵧ", dy_str), ("d_z", dz_str)]:
+                expr = parse_expression(expr_str if expr_str else "0")
+                expressions.append(expr)
+            flat_expressions = expressions
+        else:
+            N = st.session_state["matrix_N"]
+            expressions = [[None for _ in range(N)] for _ in range(N)]
+            for i in range(N):
+                for j in range(i, N):
+                    val = st.session_state.get(f"h_{i}_{j}", "0")
+                    expr = parse_expression(val if val else "0")
+                    expressions[i][j] = expr
+                    flat_expressions.append(expr)
     except ValueError as e:
         parse_error = str(e)
 
@@ -325,8 +384,8 @@ with st.sidebar:
         st.stop()
 
     # ─── Extract free parameters and create sliders ───────────────
-    free_params = extract_free_params(expressions)
-    dimensionality = detect_dimensionality(expressions)
+    free_params = extract_free_params(flat_expressions)
+    dimensionality = detect_dimensionality(flat_expressions)
     preset_params = preset.get("params", {})
 
     param_values = {}
@@ -405,29 +464,32 @@ with st.sidebar:
 
         # Show available high-symmetry points
         with st.expander("📍 고대칭점 라이브러리", expanded=False):
-            for name, (kx, ky) in HIGH_SYMMETRY_POINTS.items():
-                st.markdown(f"**{name}**: ({kx/np.pi:.3f}π, {ky/np.pi:.3f}π)")
+            for name, (kx, ky, kz) in HIGH_SYMMETRY_POINTS.items():
+                st.markdown(f"**{name}**: ({kx/np.pi:.3f}π, {ky/np.pi:.3f}π, {kz/np.pi:.3f}π)")
 
         n_custom_pts = st.number_input("경로 점 개수", min_value=2, max_value=10, value=4, step=1, key="n_custom_pts")
         default_labels = ["Γ", "X", "M", "Γ", "Y", "S", "R", "K", "K'", "M_hex"]
         default_coords = [
-            (0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0),
-            (0.0, 1.0), (0.5, 0.5), (1.0, 1.0), (4/3, 0.0),
-            (2/3, 2/np.sqrt(3)), (1.0, 1/np.sqrt(3)),
+            (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0), (0.5, 0.5, 0.0), (1.0, 1.0, 1.0), (4/3, 0.0, 0.0),
+            (2/3, 2/np.sqrt(3), 0.0), (1.0, 1/np.sqrt(3), 0.0),
         ]
 
         for i in range(int(n_custom_pts)):
-            c1, c2, c3 = st.columns([1, 1.2, 1.2])
+            c1, c2, c3, c4 = st.columns([1, 1.1, 1.1, 1.1])
             dl = default_labels[i] if i < len(default_labels) else f"P{i}"
             dkx = default_coords[i][0] if i < len(default_coords) else 0.0
             dky = default_coords[i][1] if i < len(default_coords) else 0.0
+            dkz = default_coords[i][2] if i < len(default_coords) else 0.0
             with c1:
                 lbl = st.text_input(f"Label {i+1}", value=dl, key=f"cpt_lbl_{i}")
             with c2:
                 ckx = st.number_input(f"kx/π {i+1}", value=dkx, step=0.1, key=f"cpt_kx_{i}", format="%.3f")
             with c3:
                 cky = st.number_input(f"ky/π {i+1}", value=dky, step=0.1, key=f"cpt_ky_{i}", format="%.3f")
-            custom_points.append({"label": lbl, "kx": ckx * np.pi, "ky": cky * np.pi})
+            with c4:
+                ckz = st.number_input(f"kz/π {i+1}", value=dkz, step=0.1, key=f"cpt_kz_{i}", format="%.3f")
+            custom_points.append({"label": lbl, "kx": ckx * np.pi, "ky": cky * np.pi, "kz": ckz * np.pi})
 
     show_2d = st.checkbox("2D Surface Plot 표시", value=(dimensionality >= 2), key="show2d")
 
@@ -445,7 +507,10 @@ with st.sidebar:
 
 
 # ─── Computation ─────────────────────────────────────────────────────
-d_funcs = build_lambdified_funcs(expressions, free_params)
+if ui_mode == "2x2 (Pauli 방식)":
+    d_funcs = build_lambdified_funcs(expressions, free_params)
+else:
+    d_funcs = build_lambdified_matrix_funcs(expressions, free_params)
 
 # 1D Band Calculation
 if k_path_type == "square":
@@ -457,12 +522,19 @@ elif k_path_type == "custom" and len(custom_points) >= 2:
 else:
     k_vals_1d, k_pts_1d, k_ticks, k_labels = get_k_path_1d(n_k_1d)
 
-eigenvalues_1d, band_gap_1d = compute_eigenvalues_1d(d_funcs, k_pts_1d, param_values, free_params)
+if ui_mode == "2x2 (Pauli 방식)":
+    eigenvalues_1d, band_gap_1d = compute_eigenvalues_1d(d_funcs, k_pts_1d, param_values, free_params)
+else:
+    eigenvalues_1d, band_gap_1d = compute_eigenvalues_1d_nxn(d_funcs, k_pts_1d, param_values, free_params)
 
 # 2D Surface Calculation (only if enabled)
 if show_2d:
     kx_mesh, ky_mesh = get_k_grid_2d(n_k_2d)
-    e_plus, e_minus, band_gap_2d = compute_eigenvalues_2d(d_funcs, kx_mesh, ky_mesh, param_values, free_params)
+    if ui_mode == "2x2 (Pauli 방식)":
+        e_plus, e_minus, band_gap_2d = compute_eigenvalues_2d(d_funcs, kx_mesh, ky_mesh, param_values, free_params)
+        eigenvalues_2d_list = [e_minus, e_plus]
+    else:
+        eigenvalues_2d_list, band_gap_2d = compute_eigenvalues_2d_nxn(d_funcs, kx_mesh, ky_mesh, param_values, free_params)
 
 
 # ─── Info Metrics ────────────────────────────────────────────────────
@@ -515,7 +587,7 @@ with tab1:
 if show_2d and tab2 is not None:
     with tab2:
         fig_2d = plot_2d_surface(
-            kx_mesh, ky_mesh, e_plus, e_minus,
+            kx_mesh, ky_mesh, eigenvalues_2d_list,
             title=f"Energy Surface — {preset_name}"
         )
         st.plotly_chart(fig_2d, width="stretch", key="plot_2d")
@@ -524,11 +596,19 @@ if show_2d and tab2 is not None:
 # ─── Hamiltonian Display ─────────────────────────────────────────────
 with st.expander("📝 Current Hamiltonian (SymPy)", expanded=False):
     import sympy as sp
-    st.latex(r"H(\mathbf{k}) = d_0 \sigma_0 + d_x \sigma_x + d_y \sigma_y + d_z \sigma_z")
-    col_h1, col_h2 = st.columns(2)
-    with col_h1:
-        st.latex(f"d_0 = {sp.latex(expressions[0])}")
-        st.latex(f"d_x = {sp.latex(expressions[1])}")
-    with col_h2:
-        st.latex(f"d_y = {sp.latex(expressions[2])}")
-        st.latex(f"d_z = {sp.latex(expressions[3])}")
+    if ui_mode == "2x2 (Pauli 방식)":
+        st.latex(r"H(\mathbf{k}) = d_0 \sigma_0 + d_x \sigma_x + d_y \sigma_y + d_z \sigma_z")
+        col_h1, col_h2 = st.columns(2)
+        with col_h1:
+            st.latex(f"d_0 = {sp.latex(expressions[0])}")
+            st.latex(f"d_x = {sp.latex(expressions[1])}")
+        with col_h2:
+            st.latex(f"d_y = {sp.latex(expressions[2])}")
+            st.latex(f"d_z = {sp.latex(expressions[3])}")
+    else:
+        st.markdown("**N x N Matrix (Upper Triangular):**")
+        for i in range(st.session_state["matrix_N"]):
+            for j in range(i, st.session_state["matrix_N"]):
+                expr = expressions[i][j]
+                if expr is not None and expr != 0:
+                    st.latex(f"H_{{{i+1},{j+1}}} = {sp.latex(expr)}")
