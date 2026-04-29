@@ -22,6 +22,7 @@ from core.utils import (
     get_k_path_square, get_k_path_1d, get_k_path_hexagonal,
     get_k_path_custom, get_k_grid_2d, HIGH_SYMMETRY_POINTS,
 )
+from core.tbm_ui import render_tbm_sidebar, render_tbm_main
 
 # ─── Page Configuration ──────────────────────────────────────────────
 st.set_page_config(
@@ -299,12 +300,16 @@ with st.sidebar:
     st.markdown("### ⚙️ UI Mode")
     ui_mode = st.radio(
         "해밀토니안 입력 방식",
-        ["2x2 (Pauli 방식)", "N x N (Custom 방식)"],
+        ["2x2 (Pauli 방식)", "N x N (Custom 방식)", "🔗 TBM Visual Builder"],
         key="ui_mode",
     )
-    
+
     if ui_mode == "N x N (Custom 방식)":
         matrix_N = st.number_input("행렬 크기 (N)", min_value=2, max_value=10, value=st.session_state.get("matrix_N", 4), step=1, key="matrix_N")
+
+    # ─── TBM mode: delegate entirely to tbm_ui module ─────────────────
+    if ui_mode == "🔗 TBM Visual Builder":
+        tbm_k_path_type, tbm_custom_points, tbm_n_k, tbm_show_2d, tbm_n_k_2d = render_tbm_sidebar()
     
     st.markdown("### 🧩 Model Selection")
     
@@ -341,100 +346,107 @@ with st.sidebar:
                 <div class="formula-expr">{current_val if current_val else '0'}</div>
             </div>
             """, unsafe_allow_html=True)
-    else:
+    elif ui_mode == "N x N (Custom 방식)":
+        matrix_N = st.session_state.get("matrix_N", 4)
         st.markdown(f"**{matrix_N} × {matrix_N} Hermitian Matrix**")
         st.markdown("<span style='color:#a5b4fc; font-size: 0.85rem;'>✏️ '수식 편집기 열기'를 눌러 행렬 요소를 입력하세요.</span>", unsafe_allow_html=True)
+    # TBM mode: no Hamiltonian preview here (handled in main area)
 
-    # Open the dialog editor
-    if st.button("✏️ 수식 편집기 열기", use_container_width=True, type="primary"):
-        _formula_editor_dialog()
+    # Open the dialog editor (2x2 / NxN only)
+    if ui_mode != "🔗 TBM Visual Builder":
+        if st.button("✏️ 수식 편집기 열기", use_container_width=True, type="primary"):
+            _formula_editor_dialog()
 
     st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 
-    # ─── Parse expressions ────────────────────────────────────────
+    # ─── Parse expressions (2x2 / NxN only) ──────────────────────
     parse_error = None
     expressions = []
-    flat_expressions = [] # For parameter extraction
-
-    try:
-        if ui_mode == "2x2 (Pauli 방식)":
-            d0_str = st.session_state.get("d0", "0")
-            dx_str = st.session_state.get("dx", "0")
-            dy_str = st.session_state.get("dy", "0")
-            dz_str = st.session_state.get("dz", "0")
-            
-            for label, expr_str in [("d₀", d0_str), ("dₓ", dx_str), ("dᵧ", dy_str), ("d_z", dz_str)]:
-                expr = parse_expression(expr_str if expr_str else "0")
-                expressions.append(expr)
-            flat_expressions = expressions
-        else:
-            N = st.session_state["matrix_N"]
-            expressions = [[None for _ in range(N)] for _ in range(N)]
-            for i in range(N):
-                for j in range(i, N):
-                    val = st.session_state.get(f"h_{i}_{j}", "0")
-                    expr = parse_expression(val if val else "0")
-                    expressions[i][j] = expr
-                    flat_expressions.append(expr)
-    except ValueError as e:
-        parse_error = str(e)
-
-    if parse_error:
-        st.error(f"⚠️ {parse_error}")
-        st.stop()
-
-    # ─── Extract free parameters and create sliders ───────────────
-    free_params = extract_free_params(flat_expressions)
-    dimensionality = detect_dimensionality(flat_expressions)
-    preset_params = preset.get("params", {})
-
+    flat_expressions = []
+    free_params = []
+    dimensionality = 2
     param_values = {}
-    if free_params:
-        st.markdown("### 🎛️ Parameter Tuning")
-        for param in free_params:
-            pname = str(param)
-            p_info = preset_params.get(pname, {})
-            p_min = float(p_info.get("min", -5.0))
-            p_max = float(p_info.get("max", 5.0))
-            p_default = float(p_info.get("default", 0.0))
-            p_step = float(p_info.get("step", 0.01))
-            p_default = max(p_min, min(p_max, p_default))
 
-            # Use number_input key as the single source of truth
-            ni_key = f"ni_{pname}"
-            sl_key = f"sl_{pname}"
+    if ui_mode != "🔗 TBM Visual Builder":
 
-            if ni_key not in st.session_state:
-                st.session_state[ni_key] = p_default
+        try:
+            if ui_mode == "2x2 (Pauli 방식)":
+                d0_str = st.session_state.get("d0", "0")
+                dx_str = st.session_state.get("dx", "0")
+                dy_str = st.session_state.get("dy", "0")
+                dz_str = st.session_state.get("dz", "0")
 
-            # When slider changes, update the number_input key
-            def _sync_slider_to_ni(s=sl_key, n=ni_key):
-                st.session_state[n] = st.session_state[s]
+                for label, expr_str in [("d₀", d0_str), ("dₓ", dx_str), ("dᵧ", dy_str), ("d_z", dz_str)]:
+                    expr = parse_expression(expr_str if expr_str else "0")
+                    expressions.append(expr)
+                flat_expressions = expressions
+            else:
+                N = st.session_state["matrix_N"]
+                expressions = [[None for _ in range(N)] for _ in range(N)]
+                for i in range(N):
+                    for j in range(i, N):
+                        val = st.session_state.get(f"h_{i}_{j}", "0")
+                        expr = parse_expression(val if val else "0")
+                        expressions[i][j] = expr
+                        flat_expressions.append(expr)
+        except ValueError as e:
+            parse_error = str(e)
 
-            col_s, col_n = st.columns([3, 1])
-            with col_s:
-                st.slider(
-                    f"{pname}",
-                    min_value=p_min,
-                    max_value=p_max,
-                    value=float(st.session_state[ni_key]),
-                    step=p_step,
-                    key=sl_key,
-                    on_change=_sync_slider_to_ni,
-                )
-            with col_n:
-                st.number_input(
-                    f"{pname} value",
-                    min_value=p_min,
-                    max_value=p_max,
-                    step=p_step,
-                    key=ni_key,
-                    label_visibility="collapsed",
-                )
 
-            param_values[pname] = float(st.session_state[ni_key])
-    else:
-        st.info("ℹ️ 자유 파라미터가 없습니다.")
+        if parse_error:
+            st.error(f"⚠️ {parse_error}")
+            st.stop()
+
+        # ─── Extract free parameters and create sliders ───────────────
+        free_params = extract_free_params(flat_expressions)
+        dimensionality = detect_dimensionality(flat_expressions)
+        preset_params = preset.get("params", {})
+
+        if free_params:
+            st.markdown("### 🎛️ Parameter Tuning")
+            for param in free_params:
+                pname = str(param)
+                p_info = preset_params.get(pname, {})
+                p_min = float(p_info.get("min", -5.0))
+                p_max = float(p_info.get("max", 5.0))
+                p_default = float(p_info.get("default", 0.0))
+                p_step = float(p_info.get("step", 0.01))
+                p_default = max(p_min, min(p_max, p_default))
+
+                ni_key = f"ni_{pname}"
+                sl_key = f"sl_{pname}"
+
+                if ni_key not in st.session_state:
+                    st.session_state[ni_key] = p_default
+
+                def _sync_slider_to_ni(s=sl_key, n=ni_key):
+                    st.session_state[n] = st.session_state[s]
+
+                col_s, col_n = st.columns([3, 1])
+                with col_s:
+                    st.slider(
+                        f"{pname}",
+                        min_value=p_min,
+                        max_value=p_max,
+                        value=float(st.session_state[ni_key]),
+                        step=p_step,
+                        key=sl_key,
+                        on_change=_sync_slider_to_ni,
+                    )
+                with col_n:
+                    st.number_input(
+                        f"{pname} value",
+                        min_value=p_min,
+                        max_value=p_max,
+                        step=p_step,
+                        key=ni_key,
+                        label_visibility="collapsed",
+                    )
+
+                param_values[pname] = float(st.session_state[ni_key])
+        else:
+            st.info("ℹ️ 자유 파라미터가 없습니다.")
+
 
     st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 
@@ -505,6 +517,11 @@ with st.sidebar:
                 st.markdown(f'<div class="func-item"><code>{fname}</code> — {fdesc}</div>', unsafe_allow_html=True)
             st.markdown('</div>', unsafe_allow_html=True)
 
+
+# ─── TBM Visual Builder main area ─────────────────────────────────────────────
+if ui_mode == "🔗 TBM Visual Builder":
+    render_tbm_main(tbm_k_path_type, tbm_custom_points, tbm_n_k, tbm_show_2d, tbm_n_k_2d)
+    st.stop()
 
 # ─── Computation ─────────────────────────────────────────────────────
 if ui_mode == "2x2 (Pauli 방식)":
