@@ -1,0 +1,88 @@
+"""
+Plotly-based interactive visualizations for band structures.
+"""
+
+import numpy as np
+import plotly.graph_objects as go
+
+
+BAND_COLORS = {
+    'lower': '#a855f7',
+    'upper': '#06b6d4',
+    'gap': 'rgba(250, 204, 21, 0.15)',
+}
+
+LAYOUT_DEFAULTS = dict(
+    template='plotly_dark',
+    paper_bgcolor='rgba(0,0,0,0)',
+    plot_bgcolor='rgba(14,17,23,1)',
+    font=dict(family='Inter, sans-serif', size=13, color='#e2e8f0'),
+    margin=dict(l=60, r=30, t=50, b=50),
+)
+
+
+def plot_1d_bands(k_values, eigenvalues, k_ticks, k_labels, title="1D Band Structure"):
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=k_values, y=eigenvalues[:, 0], mode='lines', name='E₋ (Lower)',
+        line=dict(color=BAND_COLORS['lower'], width=2.5),
+        hovertemplate='k = %{x:.3f}<br>E = %{y:.4f}<extra>E₋</extra>',
+    ))
+    fig.add_trace(go.Scatter(
+        x=k_values, y=eigenvalues[:, 1], mode='lines', name='E₊ (Upper)',
+        line=dict(color=BAND_COLORS['upper'], width=2.5),
+        hovertemplate='k = %{x:.3f}<br>E = %{y:.4f}<extra>E₊</extra>',
+    ))
+    fig.add_trace(go.Scatter(
+        x=np.concatenate([k_values, k_values[::-1]]),
+        y=np.concatenate([eigenvalues[:, 1], eigenvalues[::-1, 0]]),
+        fill='toself', fillcolor=BAND_COLORS['gap'],
+        line=dict(width=0), showlegend=False, hoverinfo='skip',
+    ))
+
+    for tick in k_ticks:
+        fig.add_vline(x=tick, line_dash="dot", line_color="rgba(148,163,184,0.4)", line_width=1)
+    fig.add_hline(y=0, line_dash="dash", line_color="rgba(148,163,184,0.3)", line_width=1)
+
+    fig.update_layout(
+        **LAYOUT_DEFAULTS,
+        title=dict(text=title, font=dict(size=16)),
+        xaxis=dict(title="k-path", tickmode='array', tickvals=k_ticks, ticktext=k_labels, showgrid=False, zeroline=False),
+        yaxis=dict(title="Energy E(k)", showgrid=True, gridcolor='rgba(148,163,184,0.1)', zeroline=False),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1, bgcolor='rgba(0,0,0,0)'),
+        height=420,
+    )
+    return fig
+
+
+def plot_2d_surface(kx_mesh, ky_mesh, e_plus, e_minus, title="2D Energy Surface"):
+    fig = go.Figure()
+
+    lower_cs = [[0, '#581c87'], [0.25, '#7c3aed'], [0.5, '#a855f7'], [0.75, '#c084fc'], [1, '#e9d5ff']]
+    upper_cs = [[0, '#083344'], [0.25, '#0891b2'], [0.5, '#06b6d4'], [0.75, '#67e8f9'], [1, '#cffafe']]
+
+    fig.add_trace(go.Surface(
+        x=kx_mesh, y=ky_mesh, z=e_minus, name='E₋',
+        colorscale=lower_cs, opacity=0.92, showscale=False,
+        hovertemplate='kₓ=%{x:.2f}<br>kᵧ=%{y:.2f}<br>E₋=%{z:.4f}<extra></extra>',
+    ))
+    fig.add_trace(go.Surface(
+        x=kx_mesh, y=ky_mesh, z=e_plus, name='E₊',
+        colorscale=upper_cs, opacity=0.92, showscale=False,
+        hovertemplate='kₓ=%{x:.2f}<br>kᵧ=%{y:.2f}<br>E₊=%{z:.4f}<extra></extra>',
+    ))
+
+    axis_style = dict(backgroundcolor='rgba(14,17,23,0.9)', gridcolor='rgba(148,163,184,0.15)', showbackground=True)
+    fig.update_layout(
+        **LAYOUT_DEFAULTS,
+        title=dict(text=title, font=dict(size=16)),
+        scene=dict(
+            xaxis=dict(title='kₓ', **axis_style),
+            yaxis=dict(title='kᵧ', **axis_style),
+            zaxis=dict(title='Energy E(k)', **axis_style),
+            camera=dict(eye=dict(x=1.5, y=1.5, z=1.2)),
+        ),
+        height=550,
+    )
+    return fig
