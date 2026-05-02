@@ -1,8 +1,6 @@
 """
-TBM Visual Builder — Streamlit UI module.
-
+TBM Visual Builder — Streamlit UI module (Phase 2 & 3 통합).
 Renders the entire TBM Builder interface (sidebar + main area).
-Called from app.py when ui_mode == "🔗 TBM Visual Builder".
 """
 from __future__ import annotations
 import streamlit as st
@@ -10,11 +8,13 @@ import numpy as np
 import sympy as sp
 
 from core.tbm_model import (
-    TBMModel, Lattice, Site, State, Hopping,
+    TBMModel, Lattice, BasisConfig, Site, State, Hopping,
     ORBITAL_OPTIONS, SPIN_OPTIONS,
     build_graphene_model, build_ssh_model, build_qwz_model,
+    build_kane_mele_model, build_rashba_2d_model,
 )
-from core.tbm_visualizer import plot_tbm_diagram
+from core.tbm_visualizer import generate_pyvis_html
+from core.color_manager import ColorManager
 from core.parser import build_lambdified_matrix_funcs, K_SYMBOLS
 from core.band_calculator import compute_eigenvalues_1d_nxn, compute_eigenvalues_2d_nxn
 from core.visualizer import plot_1d_bands, plot_2d_surface
@@ -22,54 +22,68 @@ from core.utils import (
     get_k_path_square, get_k_path_hexagonal, get_k_path_1d,
     get_k_path_custom, get_k_grid_2d, HIGH_SYMMETRY_POINTS,
 )
-
+from core.brillouin_zone import BrillouinZoneAnalyzer
+import streamlit.components.v1 as components
 
 # ── Session state helpers ─────────────────────────────────────────────
-
 def _init_tbm_state():
     if "tbm_model" not in st.session_state:
         st.session_state["tbm_model"] = TBMModel()
-    if "tbm_preset" not in st.session_state:
-        st.session_state["tbm_preset"] = "빈 모델"
-
+    if "tbm_color_mgr" not in st.session_state:
+        st.session_state["tbm_color_mgr"] = ColorManager()
+    if "selected_hop_uid" not in st.session_state:
+        st.session_state["selected_hop_uid"] = None
 
 def _get_model() -> TBMModel:
     return st.session_state["tbm_model"]
 
-
 def _set_model(model: TBMModel):
     st.session_state["tbm_model"] = model
+    st.session_state["tbm_color_mgr"] = ColorManager()
+    st.session_state["selected_hop_uid"] = None
 
+def _get_color_mgr() -> ColorManager:
+    return st.session_state["tbm_color_mgr"]
 
 # ── Preset loader ─────────────────────────────────────────────────────
-
 TBM_PRESETS = {
     "빈 모델": None,
     "SSH Chain (1D 위상)": build_ssh_model,
     "Graphene (Dirac 반금속)": build_graphene_model,
     "QWZ Model (검증용 2×2)": build_qwz_model,
+    "Kane-Mele (Z₂ TI + SOC)": build_kane_mele_model,
+    "Rashba 2D (스핀 분리)": build_rashba_2d_model,
 }
-
 
 # ══════════════════════════════════════════════════════════════════════
 # Sidebar UI
 # ══════════════════════════════════════════════════════════════════════
-
 def render_tbm_sidebar():
-    """Render the TBM Builder sidebar. Returns (k_path_type, k_path_args, n_k, show_2d, n_k_2d)."""
+    """Render the TBM Builder sidebar. Returns (k_path_type, custom_points, n_k, show_2d, n_k_2d)."""
     _init_tbm_state()
     model = _get_model()
 
     st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
-    st.markdown("### 📐 Lattice")
 
+    # ── Basis Config ──────────────────────────────────────────────────
+    st.markdown("### 🔬 Basis Configuration")
+    spin_on = st.checkbox("Enable Spin (↑↓)", value=model.basis_config.spin_enabled,
+                          key="tbm_spin_enabled",
+                          help="활성화하면 각 State에 spin ↑/↓ 자유도가 추가됩니다.")
+    model.basis_config.spin_enabled = spin_on
+    if spin_on:
+        st.caption(f"Internal dim = {model.basis_config.internal_dim} (spin ⊗ orbital)")
+
+    st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+    st.markdown("### 📐 Lattice")
     dim = st.selectbox("차원", [1, 2, 3],
                        index=[1, 2, 3].index(model.lattice.dimension),
                        key="tbm_lattice_dim")
     model.lattice.dimension = dim
 
     with st.expander("격자 벡터 설정", expanded=False):
-        for vec_name in (["a1"] if dim == 1 else ["a1", "a2"] if dim == 2 else ["a1", "a2", "a3"]):
+        vec_names = ["a1"] if dim == 1 else ["a1", "a2"] if dim == 2 else ["a1", "a2", "a3"]
+        for vec_name in vec_names:
             cur = getattr(model.lattice, vec_name)
             cols = st.columns(3)
             new_v = []
@@ -86,7 +100,6 @@ def render_tbm_sidebar():
     # ── Sites ─────────────────────────────────────────────────────────
     st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
     st.markdown("### 🔵 Sites")
-
     for site in list(model.sites):
         c1, c2 = st.columns([3, 1])
         with c1:
@@ -108,8 +121,8 @@ def render_tbm_sidebar():
 
     # ── States ────────────────────────────────────────────────────────
     st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
-    st.markdown(f"### ⚛️ States (기저 차원: **{model.matrix_dimension()}**)")
-
+    total_dim = model.total_dimension()
+    st.markdown(f"### ⚛️ States (H dim: **{total_dim}×{total_dim}**)")
     for state in list(model.states):
         c1, c2 = st.columns([3, 1])
         with c1:
@@ -129,23 +142,27 @@ def render_tbm_sidebar():
             sel_spin = st.selectbox("Spin", SPIN_OPTIONS, key="new_state_spin")
             if st.button("State 추가", key="add_state_btn", use_container_width=True):
                 model.add_state(State(
-                    site=site_opts[sel_site_name],
-                    orbital=sel_orbital,
-                    spin=sel_spin,
+                    site=site_opts[sel_site_name], orbital=sel_orbital, spin=sel_spin,
                 ))
                 st.rerun()
 
     # ── Hoppings ──────────────────────────────────────────────────────
     st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
     st.markdown(f"### 🔗 Hoppings ({len(model.hoppings)}개)")
+    color_mgr = _get_color_mgr()
 
     for hop in list(model.hoppings):
         src = model.get_state(hop.source_uid)
         tgt = model.get_state(hop.target_uid)
         if src and tgt:
+            clr = color_mgr.assign_color(hop.uid, is_onsite=hop.is_onsite())
             c1, c2 = st.columns([3, 1])
             with c1:
-                st.markdown(f"`{src.label()}` → `{tgt.label()}` | t=`{hop.amplitude}` R={hop.R}")
+                amp_disp = hop.amplitude_matrix.strip() if hop.amplitude_matrix.strip() else hop.amplitude
+                st.markdown(
+                    f'{color_mgr.get_html_colored(hop.uid, "●")} '
+                    f'`{src.label()}` → `{tgt.label()}` | t=`{amp_disp}` R={hop.R}',
+                    unsafe_allow_html=True)
             with c2:
                 if st.button("🗑", key=f"del_hop_{hop.uid}", help="삭제"):
                     model.remove_hopping(hop.uid)
@@ -159,18 +176,23 @@ def render_tbm_sidebar():
             labels = list(state_opts.keys())
             h_src = st.selectbox("Source State", labels, key="new_hop_src")
             h_tgt = st.selectbox("Target State", labels, key="new_hop_tgt")
-            h_amp = st.text_input("Amplitude (t)", value="1.0",
-                                  help="실수, 허수 모두 가능. 예: t, 1.5, t1*exp(I*phi)",
+            h_amp = st.text_input("Amplitude (scalar)", value="1.0",
+                                  help="실수/복소수. 예: t, 1.5, t1*exp(I*phi)",
                                   key="new_hop_amp")
+            h_amp_matrix = ""
+            if model.basis_config.spin_enabled:
+                h_amp_matrix = st.text_input(
+                    "Matrix Amplitude (Pauli)", value="",
+                    help="예: t*sigma_z, t*s0 + I*lambda_R*sy. 비어있으면 스칼라×단위행렬 사용.",
+                    key="new_hop_amp_matrix")
             rc = st.columns(3)
             hr0 = int(rc[0].number_input("Rx", value=0, step=1, key="new_hop_Rx"))
             hr1 = int(rc[1].number_input("Ry", value=0, step=1, key="new_hop_Ry"))
             hr2 = int(rc[2].number_input("Rz", value=0, step=1, key="new_hop_Rz"))
             if st.button("Hopping 추가", key="add_hop_btn", use_container_width=True):
                 model.add_hopping(Hopping(
-                    source_uid=state_opts[h_src],
-                    target_uid=state_opts[h_tgt],
-                    amplitude=h_amp,
+                    source_uid=state_opts[h_src], target_uid=state_opts[h_tgt],
+                    amplitude=h_amp, amplitude_matrix=h_amp_matrix,
                     R=[hr0, hr1, hr2],
                 ))
                 st.rerun()
@@ -178,20 +200,14 @@ def render_tbm_sidebar():
     # ── Settings ──────────────────────────────────────────────────────
     st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
     st.markdown("### ⚙️ 계산 설정")
-
     n_k = st.slider("1D k-points", 50, 500, 200, 50, key="tbm_nk1d")
     k_path_options = {
-        "square":     "Square (Γ→X→M→Γ)",
-        "hexagonal":  "Hexagonal (Γ→M→K→Γ)",
-        "1d":         "1D (−π→0→π)",
-        "custom":     "✏️ Custom",
+        "auto": "Auto (격자 기반 자동 선택)",
+        "square": "Square (Γ→X→M→Γ)", "hexagonal": "Hexagonal (Γ→M→K→Γ)",
+        "1d": "1D (−π→0→π)", "custom": "✏️ Custom",
     }
-    k_path_type = st.selectbox(
-        "k-경로 타입",
-        list(k_path_options.keys()),
-        format_func=lambda x: k_path_options[x],
-        key="tbm_kpath",
-    )
+    k_path_type = st.selectbox("k-경로 타입", list(k_path_options.keys()),
+                               format_func=lambda x: k_path_options[x], key="tbm_kpath")
 
     custom_points = []
     if k_path_type == "custom":
@@ -220,49 +236,80 @@ def render_tbm_sidebar():
 # ══════════════════════════════════════════════════════════════════════
 # Main Area UI
 # ══════════════════════════════════════════════════════════════════════
-
 def render_tbm_main(k_path_type, custom_points, n_k, show_2d, n_k_2d):
     """Render TBM diagram, H(k) preview, parameter sliders, and band plots."""
     _init_tbm_state()
     model = _get_model()
+    color_mgr = _get_color_mgr()
 
-    # ── Top row: Preset selector + clear ─────────────────────────────
+    # ── Preset selector ──────────────────────────────────────────────
     col_pre, col_clr = st.columns([4, 1])
     with col_pre:
-        preset_choice = st.selectbox(
-            "🚀 빠른 시작 (프리셋 로드)",
-            list(TBM_PRESETS.keys()),
-            key="tbm_preset_sel",
-        )
+        st.selectbox("🚀 빠른 시작 (프리셋 로드)",
+                     list(TBM_PRESETS.keys()), key="tbm_preset_sel")
+                     
+    def load_preset_callback():
+        preset_choice = st.session_state["tbm_preset_sel"]
+        fn = TBM_PRESETS[preset_choice]
+        new_model = fn() if fn else TBMModel()
+        _set_model(new_model)
+        
+        # 명시적으로 위젯 상태(Session State) 동기화
+        st.session_state["tbm_spin_enabled"] = new_model.basis_config.spin_enabled
+        st.session_state["tbm_lattice_dim"] = new_model.lattice.dimension
+        for ci, comp in enumerate(["x", "y", "z"]):
+            if ci < len(new_model.lattice.a1): st.session_state[f"tbm_lat_a1_{comp}"] = float(new_model.lattice.a1[ci])
+            if ci < len(new_model.lattice.a2): st.session_state[f"tbm_lat_a2_{comp}"] = float(new_model.lattice.a2[ci])
+            if ci < len(new_model.lattice.a3): st.session_state[f"tbm_lat_a3_{comp}"] = float(new_model.lattice.a3[ci])
+
     with col_clr:
         st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("📂 로드", key="tbm_load_preset", use_container_width=True):
-            fn = TBM_PRESETS[preset_choice]
-            _set_model(fn() if fn else TBMModel())
-            st.rerun()
+        st.button("📂 로드", key="tbm_load_preset", use_container_width=True, on_click=load_preset_callback)
 
     # ── Diagram + H(k) preview ────────────────────────────────────────
     diag_col, matrix_col = st.columns([6, 4])
 
+    selected_hop = st.session_state.get("selected_hop_uid")
+
     with diag_col:
-        fig_diag = plot_tbm_diagram(model, title="TBM Diagram")
-        st.plotly_chart(fig_diag, use_container_width=True, key="tbm_diagram")
+        st.markdown("#### TBM Diagram")
+        html_data = generate_pyvis_html(model, color_mgr=color_mgr, selected_hop_uid=selected_hop)
+        components.html(html_data, height=520)
 
     with matrix_col:
-        st.markdown("#### $H(\\mathbf{k})$ — SymPy 행렬")
+        st.markdown("#### $H(\\mathbf{k})$ — Color-coded Matrix")
         if model.matrix_dimension() == 0:
             st.info("State를 추가하면 행렬이 여기에 표시됩니다.")
         else:
             try:
                 H_sym = model.build_hamiltonian_matrix()
                 N = H_sym.shape[0]
-                # Show each non-zero element as LaTeX
                 shown = 0
                 for i in range(N):
                     for j in range(N):
                         elem = H_sym[i, j]
                         if elem != 0:
-                            st.latex(f"H_{{{i+1},{j+1}}} = {sp.latex(sp.simplify(elem))}")
+                            # 이 원소에 기여한 Hopping 추적
+                            hop_uids = model.trace_element_to_hoppings(i, j)
+                            
+                            # 수식 내의 모든 실수(Number)를 소수점 3자리로 반올림
+                            simplified_elem = sp.simplify(elem)
+                            rounded_elem = simplified_elem.xreplace({
+                                n: round(n, 3) for n in simplified_elem.atoms(sp.Number)
+                            })
+                            
+                            latex_str = sp.latex(rounded_elem)
+                            if hop_uids:
+                                primary_uid = hop_uids[0]
+                                clr = color_mgr.get_color(primary_uid)
+                                st.markdown(
+                                    f'<div style="border-left:3px solid {clr}; '
+                                    f'padding-left:8px; margin:2px 0 6px 0;">',
+                                    unsafe_allow_html=True)
+                                st.latex(f"H_{{{i+1},{j+1}}} = {latex_str}")
+                                st.markdown('</div>', unsafe_allow_html=True)
+                            else:
+                                st.latex(f"H_{{{i+1},{j+1}}} = {latex_str}")
                             shown += 1
                             if shown >= 12:
                                 st.caption(f"... ({N*N - shown}개 항목 생략)")
@@ -272,7 +319,75 @@ def render_tbm_main(k_path_type, custom_points, n_k, show_2d, n_k_2d):
             except Exception as e:
                 st.error(f"행렬 생성 오류: {e}")
 
-    # ── Guard: need states + hoppings ────────────────────────────────
+        # ── Color legend ──────────────────────────────────────────────
+        if model.hoppings:
+            with st.expander("🎨 Hopping ↔ Color Legend", expanded=False):
+                entries = []
+                for hop in model.hoppings:
+                    s = model.get_state(hop.source_uid)
+                    t = model.get_state(hop.target_uid)
+                    if s and t:
+                        amp = hop.amplitude_matrix.strip() if hop.amplitude_matrix.strip() else hop.amplitude
+                        entries.append((hop.uid, f"{s.label()}→{t.label()}", amp))
+                st.markdown(color_mgr.build_legend_html(entries), unsafe_allow_html=True)
+
+    # ── Select-to-edit Hopping form ────────────────────────────────────
+    if model.hoppings:
+        st.markdown("### ✏️ Edit Hopping")
+        hop_options = {}
+        for h in model.hoppings:
+            src = model.get_state(h.source_uid)
+            tgt = model.get_state(h.target_uid)
+            if src and tgt:
+                lbl = f"{src.label()} → {tgt.label()} (R={h.R})"
+                hop_options[h.uid] = lbl
+                
+        # 현재 선택된 Hopping 인덱스 찾기
+        sel_uid = st.session_state.get("selected_hop_uid")
+        current_idx = list(hop_options.keys()).index(sel_uid) if sel_uid in hop_options else 0
+        
+        sel_uid_from_selectbox = st.selectbox(
+            "수정할 Hopping을 선택하세요:", 
+            options=list(hop_options.keys()), 
+            format_func=lambda uid: hop_options[uid],
+            index=current_idx,
+            key="tbm_edit_hop_selector"
+        )
+        
+        # 선택이 변경되었으면 상태 업데이트 후 리런 (다이어그램 하이라이트 반영)
+        if sel_uid_from_selectbox != sel_uid:
+            st.session_state["selected_hop_uid"] = sel_uid_from_selectbox
+            st.rerun()
+
+        if sel_uid_from_selectbox:
+            hop = model.get_hopping(sel_uid_from_selectbox)
+            if hop:
+                src_st = model.get_state(hop.source_uid)
+                tgt_st = model.get_state(hop.target_uid)
+                clr = color_mgr.get_color(sel_uid_from_selectbox)
+                st.markdown(
+                    f'<div style="background:rgba(99,102,241,0.1); border:1px solid {clr}; '
+                    f'border-radius:10px; padding:12px; margin:8px 0;">'
+                    f'<span style="color:{clr}; font-weight:700;">Selected</span> — '
+                    f'{src_st.label() if src_st else "?"} → {tgt_st.label() if tgt_st else "?"}'
+                    f'</div>', unsafe_allow_html=True)
+                with st.form("edit_hop_form"):
+                    ec1, ec2 = st.columns(2)
+                    with ec1:
+                        new_amp = st.text_input("Amplitude (scalar)", value=hop.amplitude)
+                    with ec2:
+                        new_amp_m = st.text_input("Matrix Amplitude", value=hop.amplitude_matrix)
+                    rc = st.columns(3)
+                    new_r0 = int(rc[0].number_input("Rx", value=hop.R[0], step=1))
+                    new_r1 = int(rc[1].number_input("Ry", value=hop.R[1], step=1))
+                    new_r2 = int(rc[2].number_input("Rz", value=hop.R[2], step=1))
+                    if st.form_submit_button("✅ 수정 적용", use_container_width=True):
+                        hop.amplitude = new_amp
+                        hop.amplitude_matrix = new_amp_m
+                        hop.R = [new_r0, new_r1, new_r2]
+                        st.rerun()
+
+    # ── Guard: need states ────────────────────────────────────────────
     if model.matrix_dimension() == 0:
         st.info("사이드바에서 Site → State → Hopping 순서로 추가하면 밴드 구조가 계산됩니다.")
         return
@@ -282,8 +397,6 @@ def render_tbm_main(k_path_type, custom_points, n_k, show_2d, n_k_2d):
         H_sym = model.build_hamiltonian_matrix()
         expr_matrix = [[H_sym[i, j] for j in range(H_sym.shape[0])]
                        for i in range(H_sym.shape[0])]
-
-        # Extract free parameters (excluding k symbols)
         k_reserved = set(K_SYMBOLS.values())
         raw_free = sorted(H_sym.free_symbols - k_reserved, key=lambda s: s.name)
     except Exception as e:
@@ -301,16 +414,12 @@ def render_tbm_main(k_path_type, custom_points, n_k, show_2d, n_k_2d):
             sl_key = f"tbm_sl_{pname}"
             if ni_key not in st.session_state:
                 st.session_state[ni_key] = 1.0
-
             def _sync(s=sl_key, n=ni_key):
                 st.session_state[n] = st.session_state[s]
-
             with pcols[idx % len(pcols)]:
-                st.slider(pname, -5.0, 5.0,
-                          value=float(st.session_state[ni_key]),
+                st.slider(pname, -5.0, 5.0, value=float(st.session_state[ni_key]),
                           step=0.05, key=sl_key, on_change=_sync)
-                st.number_input(f"{pname} 값", -5.0, 5.0,
-                                step=0.05, key=ni_key,
+                st.number_input(f"{pname} 값", -5.0, 5.0, step=0.05, key=ni_key,
                                 label_visibility="collapsed")
             param_values[pname] = float(st.session_state[ni_key])
 
@@ -322,20 +431,28 @@ def render_tbm_main(k_path_type, custom_points, n_k, show_2d, n_k_2d):
         return
 
     # ── k-path ────────────────────────────────────────────────────────
-    if k_path_type == "square":
-        k_vals, k_pts, k_ticks, k_lbls = get_k_path_square(n_k)
-    elif k_path_type == "hexagonal":
-        k_vals, k_pts, k_ticks, k_lbls = get_k_path_hexagonal(n_k)
-    elif k_path_type == "custom" and len(custom_points) >= 2:
-        k_vals, k_pts, k_ticks, k_lbls = get_k_path_custom(custom_points, n_k)
+    actual_k_path_type = k_path_type
+    
+    # K-path 자동화 시스템 (brillouin_zone.py)
+    if actual_k_path_type == "auto":
+        analyzer = BrillouinZoneAnalyzer(model.lattice)
+        actual_k_path_type = analyzer.lattice_type
+        st.info(f"💡 **Automated BZ Analyzer**\n{analyzer.summary()}")
+        k_vals, k_pts, k_ticks, k_lbls = analyzer.get_auto_k_path(n_k)
     else:
-        k_vals, k_pts, k_ticks, k_lbls = get_k_path_1d(n_k)
+        if actual_k_path_type == "square":
+            k_vals, k_pts, k_ticks, k_lbls = get_k_path_square(n_k)
+        elif actual_k_path_type == "hexagonal":
+            k_vals, k_pts, k_ticks, k_lbls = get_k_path_hexagonal(n_k)
+        elif actual_k_path_type == "custom" and len(custom_points) >= 2:
+            k_vals, k_pts, k_ticks, k_lbls = get_k_path_custom(custom_points, n_k)
+        else:
+            k_vals, k_pts, k_ticks, k_lbls = get_k_path_1d(n_k)
 
     # ── Eigenvalues ───────────────────────────────────────────────────
     try:
         eigenvalues_1d, band_gap = compute_eigenvalues_1d_nxn(
-            func_matrix, k_pts, param_values, raw_free
-        )
+            func_matrix, k_pts, param_values, raw_free)
     except Exception as e:
         st.error(f"고유값 계산 오류: {e}")
         return
@@ -362,8 +479,9 @@ def render_tbm_main(k_path_type, custom_points, n_k, show_2d, n_k_2d):
                     unsafe_allow_html=True)
 
     # ── Band plots ────────────────────────────────────────────────────
-    N_bands = model.matrix_dimension()
-    model_name = f"TBM ({N_bands}×{N_bands})"
+    N_total = H_sym.shape[0]
+    model_name = f"TBM ({N_total}×{N_total})"
+    k_path_labels = {"square": "Square", "hexagonal": "Hexagonal", "1d": "1D", "custom": "Custom"}
 
     if show_2d:
         tab1, tab2 = st.tabs(["📈 1D Band Structure", "🌐 2D Energy Surface"])
@@ -371,26 +489,16 @@ def render_tbm_main(k_path_type, custom_points, n_k, show_2d, n_k_2d):
         tab1 = st.container()
         tab2 = None
 
-    k_path_labels = {
-        "square": "Square (Γ→X→M→Γ)",
-        "hexagonal": "Hexagonal (Γ→M→K→Γ)",
-        "1d": "1D",
-        "custom": "Custom",
-    }
     with tab1:
-        fig_1d = plot_1d_bands(
-            k_vals, eigenvalues_1d, k_ticks, k_lbls,
-            title=f"Band Structure — {model_name} ({k_path_labels.get(k_path_type, '')})"
-        )
+        fig_1d = plot_1d_bands(k_vals, eigenvalues_1d, k_ticks, k_lbls,
+                               title=f"Band Structure — {model_name} ({k_path_labels.get(k_path_type, '')})")
         st.plotly_chart(fig_1d, use_container_width=True, key="tbm_plot_1d")
 
     if show_2d and tab2 is not None:
         with tab2:
             try:
                 kx_mesh, ky_mesh = get_k_grid_2d(n_k_2d)
-                ev_2d, _ = compute_eigenvalues_2d_nxn(
-                    func_matrix, kx_mesh, ky_mesh, param_values, raw_free
-                )
+                ev_2d, _ = compute_eigenvalues_2d_nxn(func_matrix, kx_mesh, ky_mesh, param_values, raw_free)
                 fig_2d = plot_2d_surface(kx_mesh, ky_mesh, ev_2d,
                                          title=f"Energy Surface — {model_name}")
                 st.plotly_chart(fig_2d, use_container_width=True, key="tbm_plot_2d")

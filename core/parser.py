@@ -1,6 +1,8 @@
 """
 SymPy-based expression parser for Hamiltonian input.
 Handles string → symbolic expression → NumPy-callable conversion.
+
+확장: Pauli 행렬(σ_x, σ_y, σ_z) 심볼을 포함한 행렬 수식 파싱 지원.
 """
 
 import sympy as sp
@@ -12,6 +14,12 @@ from sympy import (
     sinh, cosh, tanh,
     sign, floor, ceiling,
     Piecewise,
+)
+
+from core.spin_matrices import (
+    PAULI_MAP, PAULI_KEYWORDS,
+    expand_pauli_expression,
+    _contains_pauli,
 )
 
 
@@ -55,6 +63,9 @@ SAFE_LOCALS = {
     # Wave vectors
     **K_SYMBOLS,
     **K_ALIASES,
+    # ── Pauli 행렬 심볼 (Phase 1 추가) ──
+    # 사용자가 "sigma_x", "sx" 등을 입력하면 SymPy Matrix로 치환됨
+    **PAULI_MAP,
 }
 
 # Organized reference for UI display
@@ -82,6 +93,12 @@ FUNCTION_REFERENCE = {
         ("pi", "원주율 π ≈ 3.14159"),
         ("I", "허수 단위 i"),
         ("e", "자연상수 e ≈ 2.71828"),
+    ],
+    "Pauli 행렬 (Spin)": [
+        ("sigma_x (또는 sx)", "Pauli σₓ — 스핀 플립 (off-diagonal real)"),
+        ("sigma_y (또는 sy)", "Pauli σᵧ — 스핀 플립 (off-diagonal imaginary)"),
+        ("sigma_z (또는 sz)", "Pauli σ_z — 스핀 보존 (diagonal)"),
+        ("sigma_0 (또는 s0)", "2×2 단위행렬"),
     ],
     "기타 (Misc)": [
         ("sign(x)", "부호 함수 sgn(x)"),
@@ -128,6 +145,29 @@ def parse_expression(expr_str: str) -> sp.Expr:
         )
 
 
+def parse_matrix_expression(expr_str: str, internal_dim: int = 1) -> sp.Matrix | sp.Expr:
+    """
+    스칼라 또는 Pauli 행렬을 포함한 수식을 파싱.
+
+    - internal_dim == 1: 기존 parse_expression()과 동일하게 스칼라 Expr 반환.
+    - internal_dim > 1:
+      - Pauli 키워드가 포함되어 있으면 → expand_pauli_expression()으로 행렬 전개
+      - 없으면 → 스칼라 파싱 후 internal_dim × internal_dim 단위행렬에 곱
+
+    Args:
+        expr_str: 수식 문자열
+        internal_dim: 내부 자유도 차원 (spin=2, no-spin=1)
+
+    Returns:
+        internal_dim == 1이면 sp.Expr, 아니면 sp.Matrix (internal_dim × internal_dim)
+    """
+    if internal_dim <= 1:
+        return parse_expression(expr_str)
+
+    # 내부 자유도가 2 이상인 경우: Pauli 행렬 전개를 시도
+    return expand_pauli_expression(expr_str, spin_dim=internal_dim)
+
+
 def extract_free_params(expressions: list) -> list:
     """
     Extract free parameters from a list of SymPy expressions.
@@ -144,7 +184,11 @@ def extract_free_params(expressions: list) -> list:
 
     for expr in expressions:
         if expr is not None:
-            all_symbols.update(expr.free_symbols)
+            if isinstance(expr, sp.MatrixBase):
+                # Matrix인 경우: 모든 원소의 free_symbols 수집
+                all_symbols.update(expr.free_symbols)
+            else:
+                all_symbols.update(expr.free_symbols)
 
     free_params = all_symbols - reserved
     # Sort alphabetically for consistent UI ordering
@@ -161,7 +205,10 @@ def detect_dimensionality(expressions: list) -> int:
     all_symbols = set()
     for expr in expressions:
         if expr is not None:
-            all_symbols.update(expr.free_symbols)
+            if isinstance(expr, sp.MatrixBase):
+                all_symbols.update(expr.free_symbols)
+            else:
+                all_symbols.update(expr.free_symbols)
 
     dim = 0
     if K_SYMBOLS['k_x'] in all_symbols:

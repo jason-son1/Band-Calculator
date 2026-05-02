@@ -138,3 +138,34 @@ def get_k_grid_2d(n_points: int = 80, kx_range=(-np.pi, np.pi), ky_range=(-np.pi
     ky = np.linspace(ky_range[0], ky_range[1], n_points)
     kx_mesh, ky_mesh = np.meshgrid(kx, ky)
     return kx_mesh, ky_mesh
+
+def get_auto_k_path_type(lattice) -> str:
+    """
+    Determine the best default k-path based on lattice dimension and vectors.
+    Returns: "1d", "square", "hexagonal", or "custom".
+    """
+    if lattice.dimension == 1:
+        return "1d"
+    elif lattice.dimension == 2:
+        a1 = np.array(lattice.a1[:2])
+        a2 = np.array(lattice.a2[:2])
+        norm1 = np.linalg.norm(a1)
+        norm2 = np.linalg.norm(a2)
+        
+        if norm1 == 0 or norm2 == 0:
+            return "square"
+            
+        # Check angle
+        dot_product = np.dot(a1, a2)
+        cos_theta = dot_product / (norm1 * norm2)
+        
+        # Hexagonal if angle is 60° (0.5) or 120° (-0.5)
+        if np.isclose(abs(cos_theta), 0.5, atol=0.1):
+            return "hexagonal"
+        # Square if angle is 90° (0) and norms are close
+        elif np.isclose(cos_theta, 0, atol=0.1) and np.isclose(norm1, norm2, atol=0.1):
+            return "square"
+        
+        return "custom"
+    else:
+        return "custom"
