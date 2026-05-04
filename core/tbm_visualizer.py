@@ -179,4 +179,24 @@ def generate_pyvis_html(
 
     # 임시 HTML 생성
     html_data = net.generate_html()
+    
+    injection_script = """
+    <script>
+    window.addEventListener("load", function() {
+        setTimeout(() => {
+            if (typeof network !== 'undefined') {
+                network.on("doubleClick", function(params) {
+                    if (params.nodes.length > 0) {
+                        window.parent.postMessage({type: "pyvis_double_click", payload: {type: "node", id: params.nodes[0], ts: Date.now()}}, "*");
+                    } else if (params.edges.length > 0) {
+                        window.parent.postMessage({type: "pyvis_double_click", payload: {type: "edge", id: params.edges[0], ts: Date.now()}}, "*");
+                    }
+                });
+            }
+        }, 500);
+    });
+    </script>
+    """
+    html_data = html_data.replace("</body>", injection_script + "\n</body>")
+    
     return html_data

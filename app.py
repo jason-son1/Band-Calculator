@@ -23,6 +23,7 @@ from core.utils import (
     get_k_path_custom, get_k_grid_2d, HIGH_SYMMETRY_POINTS,
 )
 from core.tbm_ui import render_tbm_sidebar, render_tbm_main
+from core.widgets import numeric_expr_input
 
 # ─── Page Configuration ──────────────────────────────────────────────
 st.set_page_config(
@@ -208,6 +209,12 @@ def _on_preset_change():
     # Reset parameter sliders for the new preset
     for key in list(st.session_state.keys()):
         if key.startswith("param_") or key.startswith("paramnum_") or key.startswith("pval_"):
+            del st.session_state[key]
+        # New numeric_expr_input parameter widgets
+        if key.startswith("app_param_") and (
+            key.endswith("__expr") or key.endswith("__slider")
+            or key.endswith("__num") or key.endswith("__last_float")
+        ):
             del st.session_state[key]
     st.session_state["_last_preset"] = name
 
@@ -404,6 +411,7 @@ with st.sidebar:
 
         if free_params:
             st.markdown("### 🎛️ Parameter Tuning")
+            st.caption("수식 입력 가능 — 예: `sqrt(3)`, `pi/4`, `2*sin(0.3)`")
             for param in free_params:
                 pname = str(param)
                 p_info = preset_params.get(pname, {})
@@ -413,37 +421,16 @@ with st.sidebar:
                 p_step = float(p_info.get("step", 0.01))
                 p_default = max(p_min, min(p_max, p_default))
 
-                ni_key = f"ni_{pname}"
-                sl_key = f"sl_{pname}"
-
-                if ni_key not in st.session_state:
-                    st.session_state[ni_key] = p_default
-
-                def _sync_slider_to_ni(s=sl_key, n=ni_key):
-                    st.session_state[n] = st.session_state[s]
-
-                col_s, col_n = st.columns([3, 1])
-                with col_s:
-                    st.slider(
-                        f"{pname}",
-                        min_value=p_min,
-                        max_value=p_max,
-                        value=float(st.session_state[ni_key]),
-                        step=p_step,
-                        key=sl_key,
-                        on_change=_sync_slider_to_ni,
-                    )
-                with col_n:
-                    st.number_input(
-                        f"{pname} value",
-                        min_value=p_min,
-                        max_value=p_max,
-                        step=p_step,
-                        key=ni_key,
-                        label_visibility="collapsed",
-                    )
-
-                param_values[pname] = float(st.session_state[ni_key])
+                _, val = numeric_expr_input(
+                    label=pname,
+                    key=f"app_param_{pname}",
+                    default_expr=f"{p_default:g}",
+                    min_v=p_min, max_v=p_max, step=p_step,
+                    fmt="%.4f",
+                    show_slider=True,
+                    show_label=True,
+                )
+                param_values[pname] = val
         else:
             st.info("ℹ️ 자유 파라미터가 없습니다.")
 
@@ -487,20 +474,25 @@ with st.sidebar:
             (2/3, 2/np.sqrt(3), 0.0), (1.0, 1/np.sqrt(3), 0.0),
         ]
 
+        st.caption("좌표 단위: π. 수식 가능 — 예: `1/2`, `2/3`, `sqrt(3)/3`")
         for i in range(int(n_custom_pts)):
-            c1, c2, c3, c4 = st.columns([1, 1.1, 1.1, 1.1])
             dl = default_labels[i] if i < len(default_labels) else f"P{i}"
             dkx = default_coords[i][0] if i < len(default_coords) else 0.0
             dky = default_coords[i][1] if i < len(default_coords) else 0.0
             dkz = default_coords[i][2] if i < len(default_coords) else 0.0
-            with c1:
-                lbl = st.text_input(f"Label {i+1}", value=dl, key=f"cpt_lbl_{i}")
-            with c2:
-                ckx = st.number_input(f"kx/π {i+1}", value=dkx, step=0.1, key=f"cpt_kx_{i}", format="%.3f")
-            with c3:
-                cky = st.number_input(f"ky/π {i+1}", value=dky, step=0.1, key=f"cpt_ky_{i}", format="%.3f")
-            with c4:
-                ckz = st.number_input(f"kz/π {i+1}", value=dkz, step=0.1, key=f"cpt_kz_{i}", format="%.3f")
+            lbl = st.text_input(f"Label {i+1}", value=dl, key=f"cpt_lbl_{i}")
+            _, ckx = numeric_expr_input(
+                f"kx/π {i+1}", key=f"cpt_kx_{i}", default_expr=f"{dkx:g}",
+                min_v=-2.0, max_v=2.0, step=0.05, fmt="%.4f",
+                show_slider=True, show_label=True)
+            _, cky = numeric_expr_input(
+                f"ky/π {i+1}", key=f"cpt_ky_{i}", default_expr=f"{dky:g}",
+                min_v=-2.0, max_v=2.0, step=0.05, fmt="%.4f",
+                show_slider=True, show_label=True)
+            _, ckz = numeric_expr_input(
+                f"kz/π {i+1}", key=f"cpt_kz_{i}", default_expr=f"{dkz:g}",
+                min_v=-2.0, max_v=2.0, step=0.05, fmt="%.4f",
+                show_slider=True, show_label=True)
             custom_points.append({"label": lbl, "kx": ckx * np.pi, "ky": cky * np.pi, "kz": ckz * np.pi})
 
     show_2d = st.checkbox("2D Surface Plot 표시", value=(dimensionality >= 2), key="show2d")

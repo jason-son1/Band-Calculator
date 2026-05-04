@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>PyVis Streamlit Component</title>
+  <script>
+    // Streamlit Custom Component Messaging
+    function sendMessageToStreamlitClient(type, data) {
+        var outData = Object.assign({
+            isStreamlitMessage: true,
+            type: type,
+        }, data);
+        window.parent.postMessage(outData, "*");
+    }
+
+    function setComponentValue(value) {
+        sendMessageToStreamlitClient("setComponentValue", {value: value});
+    }
+
+    window.addEventListener("message", function(event) {
+        if (event.data.type === "streamlit:render") {
+            const htmlData = event.data.args.html;
+            const height = event.data.args.height || 500;
+            
+            const iframe = document.getElementById("pyvis-iframe");
+            iframe.srcdoc = htmlData;
+            iframe.style.height = height + "px";
+            
+            sendMessageToStreamlitClient("setFrameHeight", {height: height + 20});
+        } 
+        else if (event.data.type === "pyvis_double_click") {
+            // Received double-click from the inner PyVis iframe
+            setComponentValue(event.data.payload);
+        }
+    });
+
+    // Notify Streamlit that the component is ready
+    window.addEventListener("load", function() {
+        sendMessageToStreamlitClient("streamlit:componentReady", {apiVersion: 1});
+    });
+  </script>
+  <style>
+    body { margin: 0; padding: 0; overflow: hidden; }
+    iframe { border: none; width: 100%; display: block; }
+  </style>
+</head>
+<body>
+  <iframe id="pyvis-iframe"></iframe>
+</body>
+</html>

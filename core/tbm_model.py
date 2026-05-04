@@ -59,15 +59,30 @@ class Lattice:
     a1: list[float] = field(default_factory=lambda: [1.0, 0.0, 0.0])
     a2: list[float] = field(default_factory=lambda: [0.0, 1.0, 0.0])
     a3: list[float] = field(default_factory=lambda: [0.0, 0.0, 1.0])
+    a1_expr: list[str] = field(default_factory=lambda: ["1", "0", "0"])
+    a2_expr: list[str] = field(default_factory=lambda: ["0", "1", "0"])
+    a3_expr: list[str] = field(default_factory=lambda: ["0", "0", "1"])
     dimension: int = 2  # 1, 2, or 3
 
     def __post_init__(self):
-        # Pad vectors to length-3
+        # Pad/truncate float vectors to length-3
         for attr in ("a1", "a2", "a3"):
             v = getattr(self, attr)
             while len(v) < 3:
                 v.append(0.0)
             setattr(self, attr, list(v[:3]))
+        # Back-fill _expr from float when missing or wrong length
+        for attr in ("a1", "a2", "a3"):
+            expr_attr = f"{attr}_expr"
+            e = getattr(self, expr_attr)
+            f = getattr(self, attr)
+            if not isinstance(e, list) or len(e) != 3:
+                e = [f"{x:g}" for x in f]
+            else:
+                e = [str(x) for x in e[:3]]
+                while len(e) < 3:
+                    e.append("0")
+            setattr(self, expr_attr, e)
 
 
 @dataclass
@@ -98,12 +113,19 @@ class Site:
     """
     name: str
     position: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    position_expr: list[str] = field(default_factory=lambda: ["0", "0", "0"])
     uid: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
 
     def __post_init__(self):
         while len(self.position) < 3:
             self.position.append(0.0)
         self.position = list(self.position[:3])
+        if not isinstance(self.position_expr, list) or len(self.position_expr) != 3:
+            self.position_expr = [f"{x:g}" for x in self.position]
+        else:
+            self.position_expr = [str(x) for x in self.position_expr[:3]]
+            while len(self.position_expr) < 3:
+                self.position_expr.append("0")
 
     def __repr__(self):
         return f"Site({self.name}, pos={self.position})"

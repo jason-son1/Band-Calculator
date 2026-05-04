@@ -16,6 +16,7 @@ from core.tbm_model import (
 from core.tbm_visualizer import generate_pyvis_html
 from core.color_manager import ColorManager
 from core.parser import build_lambdified_matrix_funcs, K_SYMBOLS
+from core.widgets import numeric_expr_input, reset_numeric_expr_input
 from core.band_calculator import compute_eigenvalues_1d_nxn, compute_eigenvalues_2d_nxn
 from core.visualizer import plot_1d_bands, plot_2d_surface
 from core.utils import (
@@ -24,6 +25,14 @@ from core.utils import (
 )
 from core.brillouin_zone import BrillouinZoneAnalyzer
 import streamlit.components.v1 as components
+import os
+
+# Initialize PyVis Component
+PYVIS_COMPONENT_PATH = os.path.join(os.path.dirname(__file__), "pyvis_component")
+try:
+    pyvis_interaction = components.declare_component("pyvis_interaction", path=PYVIS_COMPONENT_PATH)
+except Exception:
+    pyvis_interaction = None
 
 # ── Session state helpers ─────────────────────────────────────────────
 def _init_tbm_state():
@@ -33,6 +42,10 @@ def _init_tbm_state():
         st.session_state["tbm_color_mgr"] = ColorManager()
     if "selected_hop_uid" not in st.session_state:
         st.session_state["selected_hop_uid"] = None
+    if "selected_site_uid" not in st.session_state:
+        st.session_state["selected_site_uid"] = None
+    if "selected_state_uid" not in st.session_state:
+        st.session_state["selected_state_uid"] = None
 
 def _get_model() -> TBMModel:
     return st.session_state["tbm_model"]
@@ -82,20 +95,25 @@ def render_tbm_sidebar():
     model.lattice.dimension = dim
 
     with st.expander("격자 벡터 설정", expanded=False):
+        st.caption("수식 입력 가능 — 예: `sqrt(3)/2`, `pi/4`")
         vec_names = ["a1"] if dim == 1 else ["a1", "a2"] if dim == 2 else ["a1", "a2", "a3"]
         for vec_name in vec_names:
-            cur = getattr(model.lattice, vec_name)
-            cols = st.columns(3)
-            new_v = []
+            cur_expr = getattr(model.lattice, f"{vec_name}_expr")
+            new_floats = []
+            new_exprs = []
             for ci, comp in enumerate(["x", "y", "z"]):
-                with cols[ci]:
-                    new_v.append(st.number_input(
-                        f"{vec_name}_{comp}", value=float(cur[ci]),
-                        step=0.1, format="%.2f",
-                        key=f"tbm_lat_{vec_name}_{comp}",
-                        label_visibility="collapsed" if ci > 0 else "visible",
-                    ))
-            setattr(model.lattice, vec_name, new_v)
+                e, v = numeric_expr_input(
+                    label=f"{vec_name}_{comp}",
+                    key=f"tbm_lat_{vec_name}_{comp}",
+                    default_expr=str(cur_expr[ci]),
+                    min_v=-3.0, max_v=3.0, step=0.05,
+                    fmt="%.4f",
+                    show_label=True,
+                )
+                new_floats.append(v)
+                new_exprs.append(e)
+            setattr(model.lattice, vec_name, new_floats)
+            setattr(model.lattice, f"{vec_name}_expr", new_exprs)
 
     # ── Sites ─────────────────────────────────────────────────────────
     st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
@@ -111,12 +129,20 @@ def render_tbm_sidebar():
 
     with st.expander("➕ Site 추가", expanded=False):
         sname = st.text_input("이름", value=f"S{len(model.sites)}", key="new_site_name")
-        sc = st.columns(3)
-        sx = sc[0].number_input("x", value=0.0, step=0.1, format="%.2f", key="new_site_x")
-        sy = sc[1].number_input("y", value=0.0, step=0.1, format="%.2f", key="new_site_y")
-        sz = sc[2].number_input("z", value=0.0, step=0.1, format="%.2f", key="new_site_z")
+        st.caption("Position (수식 가능)")
+        ex_x, sx = numeric_expr_input("x", key="new_site_x", default_expr="0",
+                                       min_v=-2.0, max_v=2.0, step=0.05,
+                                       show_label=True)
+        ex_y, sy = numeric_expr_input("y", key="new_site_y", default_expr="0",
+                                       min_v=-2.0, max_v=2.0, step=0.05,
+                                       show_label=True)
+        ex_z, sz = numeric_expr_input("z", key="new_site_z", default_expr="0",
+                                       min_v=-2.0, max_v=2.0, step=0.05,
+                                       show_label=True)
         if st.button("Site 추가", key="add_site_btn", use_container_width=True):
-            model.add_site(Site(name=sname, position=[sx, sy, sz]))
+            model.add_site(Site(name=sname,
+                                position=[sx, sy, sz],
+                                position_expr=[ex_x, ex_y, ex_z]))
             st.rerun()
 
     # ── States ────────────────────────────────────────────────────────
@@ -217,12 +243,23 @@ def render_tbm_sidebar():
         n_pts = st.number_input("점 개수", 2, 10, 4, key="tbm_n_custom_pts")
         def_lbls = ["Γ", "X", "M", "Γ", "Y", "R"]
         def_coords = [(0,0,0),(1,0,0),(1,1,0),(0,0,0),(0,1,0),(1,1,1)]
+        st.caption("좌표는 π 단위. 수식 가능 — 예: `1/2`, `2/3`, `sqrt(3)/3`")
         for i in range(int(n_pts)):
-            cc = st.columns([1,1,1,1])
-            lbl = cc[0].text_input(f"Lbl{i+1}", def_lbls[i] if i < len(def_lbls) else f"P{i}", key=f"tbm_cpt_lbl_{i}")
-            ckx = cc[1].number_input(f"kx{i+1}", value=float(def_coords[i][0]) if i < len(def_coords) else 0.0, step=0.1, format="%.2f", key=f"tbm_cpt_kx_{i}")
-            cky = cc[2].number_input(f"ky{i+1}", value=float(def_coords[i][1]) if i < len(def_coords) else 0.0, step=0.1, format="%.2f", key=f"tbm_cpt_ky_{i}")
-            ckz = cc[3].number_input(f"kz{i+1}", value=float(def_coords[i][2]) if i < len(def_coords) else 0.0, step=0.1, format="%.2f", key=f"tbm_cpt_kz_{i}")
+            lbl = st.text_input(
+                f"Point {i+1} Label",
+                def_lbls[i] if i < len(def_lbls) else f"P{i}",
+                key=f"tbm_cpt_lbl_{i}",
+            )
+            d = def_coords[i] if i < len(def_coords) else (0, 0, 0)
+            _, ckx = numeric_expr_input(
+                "kx (×π)", key=f"tbm_cpt_kx_{i}", default_expr=str(d[0]),
+                min_v=-2.0, max_v=2.0, step=0.05, show_label=True)
+            _, cky = numeric_expr_input(
+                "ky (×π)", key=f"tbm_cpt_ky_{i}", default_expr=str(d[1]),
+                min_v=-2.0, max_v=2.0, step=0.05, show_label=True)
+            _, ckz = numeric_expr_input(
+                "kz (×π)", key=f"tbm_cpt_kz_{i}", default_expr=str(d[2]),
+                min_v=-2.0, max_v=2.0, step=0.05, show_label=True)
             custom_points.append({"label": lbl, "kx": ckx*np.pi, "ky": cky*np.pi, "kz": ckz*np.pi})
 
     show_2d = st.checkbox("2D Surface Plot", value=False, key="tbm_show2d")
@@ -242,6 +279,16 @@ def render_tbm_main(k_path_type, custom_points, n_k, show_2d, n_k_2d):
     model = _get_model()
     color_mgr = _get_color_mgr()
 
+    # ── Handle Scroll-to logic ──────────────────────────────────────────
+    scroll_target = st.session_state.pop("scroll_to", None)
+    if scroll_target:
+        scroll_js = f"""
+        <script>
+        window.parent.document.getElementById('{scroll_target}').scrollIntoView({{behavior: 'smooth', block: 'start'}});
+        </script>
+        """
+        st.components.v1.html(scroll_js, height=0)
+
     # ── Preset selector ──────────────────────────────────────────────
     col_pre, col_clr = st.columns([4, 1])
     with col_pre:
@@ -253,14 +300,23 @@ def render_tbm_main(k_path_type, custom_points, n_k, show_2d, n_k_2d):
         fn = TBM_PRESETS[preset_choice]
         new_model = fn() if fn else TBMModel()
         _set_model(new_model)
-        
+
         # 명시적으로 위젯 상태(Session State) 동기화
         st.session_state["tbm_spin_enabled"] = new_model.basis_config.spin_enabled
         st.session_state["tbm_lattice_dim"] = new_model.lattice.dimension
         for ci, comp in enumerate(["x", "y", "z"]):
-            if ci < len(new_model.lattice.a1): st.session_state[f"tbm_lat_a1_{comp}"] = float(new_model.lattice.a1[ci])
-            if ci < len(new_model.lattice.a2): st.session_state[f"tbm_lat_a2_{comp}"] = float(new_model.lattice.a2[ci])
-            if ci < len(new_model.lattice.a3): st.session_state[f"tbm_lat_a3_{comp}"] = float(new_model.lattice.a3[ci])
+            for vec in ("a1", "a2", "a3"):
+                vec_expr = getattr(new_model.lattice, f"{vec}_expr")
+                if ci < len(vec_expr):
+                    reset_numeric_expr_input(
+                        f"tbm_lat_{vec}_{comp}", str(vec_expr[ci]))
+        # Reset parameter widgets so old preset's params don't leak in
+        for k in list(st.session_state.keys()):
+            if k.startswith("tbm_param_") and (
+                k.endswith("__expr") or k.endswith("__slider")
+                or k.endswith("__num") or k.endswith("__last_float")
+            ):
+                del st.session_state[k]
 
     with col_clr:
         st.markdown("<br>", unsafe_allow_html=True)
@@ -274,7 +330,27 @@ def render_tbm_main(k_path_type, custom_points, n_k, show_2d, n_k_2d):
     with diag_col:
         st.markdown("#### TBM Diagram")
         html_data = generate_pyvis_html(model, color_mgr=color_mgr, selected_hop_uid=selected_hop)
-        components.html(html_data, height=520)
+        
+        if pyvis_interaction:
+            clicked_element = pyvis_interaction(html=html_data, height=520, key="pyvis_diagram")
+            if clicked_element:
+                ts = clicked_element.get("ts", 0)
+                if ts != st.session_state.get("last_pyvis_click_ts"):
+                    st.session_state["last_pyvis_click_ts"] = ts
+                    uid = clicked_element.get("id")
+                    c_type = clicked_element.get("type")
+                    
+                    if c_type == "node":
+                        if any(s.uid == uid for s in model.states):
+                            st.session_state["selected_state_uid"] = uid
+                            st.session_state["scroll_to"] = "edit-state"
+                    elif c_type == "edge":
+                        if any(h.uid == uid for h in model.hoppings):
+                            st.session_state["selected_hop_uid"] = uid
+                            st.session_state["scroll_to"] = "edit-hopping"
+                    st.rerun()
+        else:
+            components.html(html_data, height=520)
 
     with matrix_col:
         st.markdown("#### $H(\\mathbf{k})$ — Color-coded Matrix")
@@ -283,6 +359,10 @@ def render_tbm_main(k_path_type, custom_points, n_k, show_2d, n_k_2d):
         else:
             try:
                 H_sym = model.build_hamiltonian_matrix()
+                
+                with st.expander("👀 전체 Hamiltonian 행렬 보기", expanded=False):
+                    st.latex(sp.latex(sp.simplify(H_sym)))
+                
                 N = H_sym.shape[0]
                 shown = 0
                 for i in range(N):
@@ -333,6 +413,7 @@ def render_tbm_main(k_path_type, custom_points, n_k, show_2d, n_k_2d):
 
     # ── Select-to-edit Hopping form ────────────────────────────────────
     if model.hoppings:
+        st.markdown('<div id="edit-hopping"></div>', unsafe_allow_html=True)
         st.markdown("### ✏️ Edit Hopping")
         hop_options = {}
         for h in model.hoppings:
@@ -387,6 +468,107 @@ def render_tbm_main(k_path_type, custom_points, n_k, show_2d, n_k_2d):
                         hop.R = [new_r0, new_r1, new_r2]
                         st.rerun()
 
+    # ── Select-to-edit Site form ──────────────────────────────────────
+    if model.sites:
+        st.markdown('<div id="edit-site"></div>', unsafe_allow_html=True)
+        st.markdown("### 🔵 Edit Site")
+        site_options = {s.uid: s.name for s in model.sites}
+        sel_site_uid_prev = st.session_state.get("selected_site_uid")
+        site_idx = (list(site_options.keys()).index(sel_site_uid_prev)
+                    if sel_site_uid_prev in site_options else 0)
+        sel_site_uid = st.selectbox(
+            "수정할 Site를 선택하세요:",
+            options=list(site_options.keys()),
+            format_func=lambda uid: site_options[uid],
+            index=site_idx,
+            key="tbm_edit_site_selector",
+        )
+        if sel_site_uid != sel_site_uid_prev:
+            st.session_state["selected_site_uid"] = sel_site_uid
+            # Reset position widgets to the newly selected site's expressions
+            site_obj = next((s for s in model.sites if s.uid == sel_site_uid), None)
+            if site_obj is not None:
+                for ci, comp in enumerate(["x", "y", "z"]):
+                    reset_numeric_expr_input(
+                        f"edit_site_pos_{comp}", str(site_obj.position_expr[ci]))
+                st.session_state["edit_site_name"] = site_obj.name
+            st.rerun()
+
+        if sel_site_uid:
+            site = next((s for s in model.sites if s.uid == sel_site_uid), None)
+            if site is not None:
+                # Make sure the name input has an initial value on first render
+                if "edit_site_name" not in st.session_state:
+                    st.session_state["edit_site_name"] = site.name
+
+                ec1, ec2 = st.columns([1, 2])
+                with ec1:
+                    new_name = st.text_input("이름", key="edit_site_name")
+                with ec2:
+                    st.caption("Position (수식 가능)")
+                    e_x, v_x = numeric_expr_input("x", key="edit_site_pos_x",
+                                                   default_expr=str(site.position_expr[0]),
+                                                   min_v=-2.0, max_v=2.0, step=0.05)
+                    e_y, v_y = numeric_expr_input("y", key="edit_site_pos_y",
+                                                   default_expr=str(site.position_expr[1]),
+                                                   min_v=-2.0, max_v=2.0, step=0.05)
+                    e_z, v_z = numeric_expr_input("z", key="edit_site_pos_z",
+                                                   default_expr=str(site.position_expr[2]),
+                                                   min_v=-2.0, max_v=2.0, step=0.05)
+                if st.button("✅ Site 수정 적용", key="apply_edit_site",
+                             use_container_width=True):
+                    site.name = new_name
+                    site.position = [v_x, v_y, v_z]
+                    site.position_expr = [e_x, e_y, e_z]
+                    st.rerun()
+
+    # ── Select-to-edit State form ─────────────────────────────────────
+    if model.states:
+        st.markdown('<div id="edit-state"></div>', unsafe_allow_html=True)
+        st.markdown("### ⚛️ Edit State")
+        state_options = {s.uid: s.label() for s in model.states}
+        sel_state_uid_prev = st.session_state.get("selected_state_uid")
+        state_idx = (list(state_options.keys()).index(sel_state_uid_prev)
+                     if sel_state_uid_prev in state_options else 0)
+        sel_state_uid = st.selectbox(
+            "수정할 State를 선택하세요:",
+            options=list(state_options.keys()),
+            format_func=lambda uid: state_options[uid],
+            index=state_idx,
+            key="tbm_edit_state_selector",
+        )
+        if sel_state_uid != sel_state_uid_prev:
+            st.session_state["selected_state_uid"] = sel_state_uid
+            st.rerun()
+
+        if sel_state_uid:
+            state = next((s for s in model.states if s.uid == sel_state_uid), None)
+            if state is not None:
+                site_opts = {s.name: s for s in model.sites}
+                cur_site_idx = list(site_opts.keys()).index(state.site.name) \
+                    if state.site.name in site_opts else 0
+                cur_orb_idx = ORBITAL_OPTIONS.index(state.orbital) \
+                    if state.orbital in ORBITAL_OPTIONS else 0
+                cur_spin_idx = SPIN_OPTIONS.index(state.spin) \
+                    if state.spin in SPIN_OPTIONS else 0
+                with st.form("edit_state_form"):
+                    sc1, sc2, sc3 = st.columns(3)
+                    with sc1:
+                        new_site_name = st.selectbox(
+                            "Site", list(site_opts.keys()), index=cur_site_idx)
+                    with sc2:
+                        new_orbital = st.selectbox(
+                            "Orbital", ORBITAL_OPTIONS, index=cur_orb_idx)
+                    with sc3:
+                        new_spin = st.selectbox(
+                            "Spin", SPIN_OPTIONS, index=cur_spin_idx)
+                    if st.form_submit_button("✅ State 수정 적용",
+                                              use_container_width=True):
+                        state.site = site_opts[new_site_name]
+                        state.orbital = new_orbital
+                        state.spin = new_spin
+                        st.rerun()
+
     # ── Guard: need states ────────────────────────────────────────────
     if model.matrix_dimension() == 0:
         st.info("사이드바에서 Site → State → Hopping 순서로 추가하면 밴드 구조가 계산됩니다.")
@@ -407,21 +589,18 @@ def render_tbm_main(k_path_type, custom_points, n_k, show_2d, n_k_2d):
     param_values: dict[str, float] = {}
     if raw_free:
         st.markdown("### 🎛️ Parameter Tuning")
-        pcols = st.columns(min(len(raw_free), 3))
-        for idx, sym in enumerate(raw_free):
+        st.caption("수식 입력 가능 — 예: `sqrt(3)`, `pi/4`, `2*sin(0.3)`")
+        for sym in raw_free:
             pname = str(sym)
-            ni_key = f"tbm_ni_{pname}"
-            sl_key = f"tbm_sl_{pname}"
-            if ni_key not in st.session_state:
-                st.session_state[ni_key] = 1.0
-            def _sync(s=sl_key, n=ni_key):
-                st.session_state[n] = st.session_state[s]
-            with pcols[idx % len(pcols)]:
-                st.slider(pname, -5.0, 5.0, value=float(st.session_state[ni_key]),
-                          step=0.05, key=sl_key, on_change=_sync)
-                st.number_input(f"{pname} 값", -5.0, 5.0, step=0.05, key=ni_key,
-                                label_visibility="collapsed")
-            param_values[pname] = float(st.session_state[ni_key])
+            _, val = numeric_expr_input(
+                label=pname,
+                key=f"tbm_param_{pname}",
+                default_expr="1",
+                min_v=-5.0, max_v=5.0, step=0.05,
+                fmt="%.4f",
+                show_label=True,
+            )
+            param_values[pname] = val
 
     # ── Build callable matrix functions ───────────────────────────────
     try:

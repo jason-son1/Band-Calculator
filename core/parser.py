@@ -273,5 +273,28 @@ def build_lambdified_matrix_funcs(expr_matrix: list, free_params: list):
             else:
                 f = lambdify(args, expr, modules=['numpy'])
                 func_matrix[i][j] = f
-                
+
     return func_matrix
+
+
+def eval_constant_expression(s: str) -> float:
+    """
+    상수 수식을 평가하여 float을 반환합니다.
+
+    예: "sqrt(3)" → 1.7320508..., "pi/4" → 0.7853981..., "2*sin(0.3)" → 0.5910...
+
+    k_x/k_y/k_z 또는 자유 파라미터가 포함된 수식은 ValueError를 발생시킵니다.
+    pi, I, E 등의 수학 상수는 허용됩니다.
+    """
+    s = (s or "").strip()
+    if not s:
+        return 0.0
+    expr = parse_expression(s)
+    free = expr.free_symbols - {sp.pi, sp.I, sp.E}
+    if free:
+        names = ", ".join(sorted(str(f) for f in free))
+        raise ValueError(f"상수가 아닌 자유 변수가 포함되어 있습니다: {names}")
+    try:
+        return float(expr.evalf())
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"수식을 실수로 변환할 수 없습니다: '{s}' ({e})")
