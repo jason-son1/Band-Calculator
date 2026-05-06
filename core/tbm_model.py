@@ -438,6 +438,117 @@ class TBMModel:
         ]
         return "\n".join(lines)
 
+    # ── 직렬화 (저장 / 불러오기) ──────────────────────────────────────
+
+    def to_dict(self) -> dict:
+        """모델 전체를 JSON 직렬화 가능한 dict로 반환."""
+        return {
+            "version": "1.0",
+            "lattice": {
+                "dimension": self.lattice.dimension,
+                "a1": self.lattice.a1,
+                "a2": self.lattice.a2,
+                "a3": self.lattice.a3,
+                "a1_expr": self.lattice.a1_expr,
+                "a2_expr": self.lattice.a2_expr,
+                "a3_expr": self.lattice.a3_expr,
+            },
+            "basis_config": {
+                "spin_enabled": self.basis_config.spin_enabled,
+                "spin_dim": self.basis_config.spin_dim,
+            },
+            "sites": [
+                {
+                    "uid": s.uid,
+                    "name": s.name,
+                    "position": s.position,
+                    "position_expr": s.position_expr,
+                }
+                for s in self.sites
+            ],
+            "states": [
+                {
+                    "uid": st.uid,
+                    "site_uid": st.site.uid,
+                    "orbital": st.orbital,
+                    "spin": st.spin,
+                }
+                for st in self.states
+            ],
+            "hoppings": [
+                {
+                    "uid": h.uid,
+                    "source_uid": h.source_uid,
+                    "target_uid": h.target_uid,
+                    "amplitude": h.amplitude,
+                    "amplitude_matrix": h.amplitude_matrix,
+                    "R": h.R,
+                    "label": h.label,
+                    "color_id": h.color_id,
+                }
+                for h in self.hoppings
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "TBMModel":
+        """dict (JSON 파일에서 파싱된)로부터 TBMModel을 복원."""
+        lat = data["lattice"]
+        lattice = Lattice(
+            dimension=lat.get("dimension", 2),
+            a1=lat["a1"], a2=lat["a2"], a3=lat["a3"],
+            a1_expr=lat.get("a1_expr", [str(x) for x in lat["a1"]]),
+            a2_expr=lat.get("a2_expr", [str(x) for x in lat["a2"]]),
+            a3_expr=lat.get("a3_expr", [str(x) for x in lat["a3"]]),
+        )
+        bc = data.get("basis_config", {})
+        basis_config = BasisConfig(
+            spin_enabled=bc.get("spin_enabled", False),
+            spin_dim=bc.get("spin_dim", 2),
+        )
+        model = cls(lattice=lattice, basis_config=basis_config)
+
+        # Sites 복원
+        site_map: dict[str, Site] = {}
+        for s in data.get("sites", []):
+            site = Site(
+                name=s["name"],
+                position=s["position"],
+                position_expr=s.get("position_expr", [str(x) for x in s["position"]]),
+                uid=s["uid"],
+            )
+            model.sites.append(site)
+            site_map[site.uid] = site
+
+        # States 복원 (site_uid 참조)
+        for st in data.get("states", []):
+            site = site_map.get(st["site_uid"])
+            if site is None:
+                continue
+            state = State(
+                site=site,
+                orbital=st.get("orbital", "s"),
+                spin=st.get("spin", "none"),
+                uid=st["uid"],
+            )
+            model.states.append(state)
+
+        # Hoppings 복원
+        for h in data.get("hoppings", []):
+            hop = Hopping(
+                source_uid=h["source_uid"],
+                target_uid=h["target_uid"],
+                amplitude=h.get("amplitude", "1.0"),
+                amplitude_matrix=h.get("amplitude_matrix", ""),
+                R=h.get("R", [0, 0, 0]),
+                uid=h["uid"],
+                label=h.get("label", ""),
+                color_id=h.get("color_id", -1),
+            )
+            model.hoppings.append(hop)
+
+        return model
+
 
 # ══════════════════════════════════════════════════════════════════════
 # Preset Builders

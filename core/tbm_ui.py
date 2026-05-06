@@ -13,7 +13,7 @@ from core.tbm_model import (
     build_graphene_model, build_ssh_model, build_qwz_model,
     build_kane_mele_model, build_rashba_2d_model,
 )
-from core.tbm_visualizer import generate_pyvis_html
+from core.tbm_visualizer import generate_pyvis_html, generate_real_space_figure, SITE_COLORS
 from core.color_manager import ColorManager
 from core.parser import build_lambdified_matrix_funcs, K_SYMBOLS
 from core.widgets import numeric_expr_input, reset_numeric_expr_input
@@ -281,6 +281,78 @@ def render_tbm_sidebar():
 
 
 # ══════════════════════════════════════════════════════════════════════
+# 모델 저장 / 불러오기 헬퍼
+# ══════════════════════════════════════════════════════════════════════
+def _sync_model_widgets(new_model: "TBMModel") -> None:
+    """프리셋/JSON 로드 후 사이드바 위젯 상태를 새 모델에 맞게 동기화."""
+    st.session_state["tbm_spin_enabled"]  = new_model.basis_config.spin_enabled
+    st.session_state["tbm_lattice_dim"]   = new_model.lattice.dimension
+    for ci, comp in enumerate(["x", "y", "z"]):
+        for vec in ("a1", "a2", "a3"):
+            vec_expr = getattr(new_model.lattice, f"{vec}_expr")
+            if ci < len(vec_expr):
+                reset_numeric_expr_input(f"tbm_lat_{vec}_{comp}", str(vec_expr[ci]))
+    for k in list(st.session_state.keys()):
+        if k.startswith("tbm_param_") and k.endswith(
+            ("__expr", "__slider", "__num", "__last_float")
+        ):
+            del st.session_state[k]
+
+
+def _render_save_load(model: "TBMModel") -> None:
+    """저장(JSON 다운로드) / 불러오기(JSON 업로드) UI 섹션."""
+    import json
+
+    with st.expander("💾 모델 저장 / 불러오기", expanded=False):
+        col_save, col_load = st.columns(2)
+
+        # ── 저장(Export) ─────────────────────────────────────────────
+        with col_save:
+            st.markdown("**📤 저장 (Export)**")
+            st.caption("현재 모델 전체를 JSON 파일로 다운로드합니다.")
+            json_bytes = json.dumps(
+                model.to_dict(), indent=2, ensure_ascii=False
+            ).encode("utf-8")
+            st.download_button(
+                label="⬇️ JSON 다운로드",
+                data=json_bytes,
+                file_name="tbm_model.json",
+                mime="application/json",
+                key="tbm_download_json",
+                use_container_width=True,
+            )
+
+        # ── 불러오기(Import) ──────────────────────────────────────────
+        with col_load:
+            st.markdown("**📥 불러오기 (Import)**")
+            st.caption("저장된 JSON 파일을 선택하면 모델을 복원합니다.")
+            uploaded = st.file_uploader(
+                "JSON 파일 선택",
+                type=["json"],
+                key="tbm_upload_json",
+                label_visibility="collapsed",
+            )
+            if uploaded is not None:
+                if st.button("모델 불러오기 ▶", key="tbm_load_json_btn",
+                             use_container_width=True):
+                    try:
+                        uploaded.seek(0)
+                        data = json.load(uploaded)
+                        new_model = TBMModel.from_dict(data)
+                        _set_model(new_model)
+                        _sync_model_widgets(new_model)
+                        st.success(
+                            f"✅ 모델 복원 완료 — "
+                            f"{len(new_model.sites)}개 Site, "
+                            f"{len(new_model.states)}개 State, "
+                            f"{len(new_model.hoppings)}개 Hopping"
+                        )
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"불러오기 오류: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════
 # Main Area UI
 # ══════════════════════════════════════════════════════════════════════
 def render_tbm_main(k_path_type, custom_points, n_k, show_2d, n_k_2d):
@@ -331,6 +403,9 @@ def render_tbm_main(k_path_type, custom_points, n_k, show_2d, n_k_2d):
     with col_clr:
         st.markdown("<br>", unsafe_allow_html=True)
         st.button("📂 로드", key="tbm_load_preset", use_container_width=True, on_click=load_preset_callback)
+
+    # ── 모델 저장 / 불러오기 ──────────────────────────────────────────
+    _render_save_load(model)
 
     # ── Diagram + H(k) preview ────────────────────────────────────────
     # 배치 모드 선택: 물리 엔진(자유 배치) ↔ 실제 격자(고정 좌표)
