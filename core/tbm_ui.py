@@ -36,6 +36,39 @@ except Exception:
 
 # ── Session state helpers ─────────────────────────────────────────────
 def _init_tbm_state():
+    # JSON 불러오기 대기 중인 데이터가 있으면 위젯 렌더링 전에 적용
+    if "tbm_pending_load" in st.session_state:
+        import json as _json
+        data = st.session_state.pop("tbm_pending_load")
+        try:
+            new_model = TBMModel.from_dict(data)
+            st.session_state["tbm_model"]      = new_model
+            st.session_state["tbm_color_mgr"]  = ColorManager()
+            st.session_state["selected_hop_uid"]   = None
+            st.session_state["selected_site_uid"]  = None
+            st.session_state["selected_state_uid"] = None
+            # 위젯 키 동기화 (아직 위젯이 그려지기 전이므로 안전)
+            st.session_state["tbm_spin_enabled"] = new_model.basis_config.spin_enabled
+            st.session_state["tbm_lattice_dim"]  = new_model.lattice.dimension
+            for ci, comp in enumerate(["x", "y", "z"]):
+                for vec in ("a1", "a2", "a3"):
+                    vec_expr = getattr(new_model.lattice, f"{vec}_expr")
+                    if ci < len(vec_expr):
+                        reset_numeric_expr_input(f"tbm_lat_{vec}_{comp}", str(vec_expr[ci]))
+            for k in list(st.session_state.keys()):
+                if k.startswith("tbm_param_") and k.endswith(
+                    ("__expr", "__slider", "__num", "__last_float")
+                ):
+                    del st.session_state[k]
+            st.session_state["tbm_load_ok"] = (
+                f"✅ 모델 복원 완료 — "
+                f"{len(new_model.sites)}개 Site, "
+                f"{len(new_model.states)}개 State, "
+                f"{len(new_model.hoppings)}개 Hopping"
+            )
+        except Exception as e:
+            st.session_state["tbm_load_error"] = str(e)
+
     if "tbm_model" not in st.session_state:
         st.session_state["tbm_model"] = TBMModel()
     if "tbm_color_mgr" not in st.session_state:
@@ -283,24 +316,12 @@ def render_tbm_sidebar():
 # ══════════════════════════════════════════════════════════════════════
 # 모델 저장 / 불러오기 헬퍼
 # ══════════════════════════════════════════════════════════════════════
-def _sync_model_widgets(new_model: "TBMModel") -> None:
-    """프리셋/JSON 로드 후 사이드바 위젯 상태를 새 모델에 맞게 동기화."""
-    st.session_state["tbm_spin_enabled"]  = new_model.basis_config.spin_enabled
-    st.session_state["tbm_lattice_dim"]   = new_model.lattice.dimension
-    for ci, comp in enumerate(["x", "y", "z"]):
-        for vec in ("a1", "a2", "a3"):
-            vec_expr = getattr(new_model.lattice, f"{vec}_expr")
-            if ci < len(vec_expr):
-                reset_numeric_expr_input(f"tbm_lat_{vec}_{comp}", str(vec_expr[ci]))
-    for k in list(st.session_state.keys()):
-        if k.startswith("tbm_param_") and k.endswith(
-            ("__expr", "__slider", "__num", "__last_float")
-        ):
-            del st.session_state[k]
-
-
 def _render_save_load(model: "TBMModel") -> None:
-    """저장(JSON 다운로드) / 불러오기(JSON 업로드) UI 섹션."""
+    """저장(JSON 다운로드) / 불러오기(JSON 업로드) UI 섹션.
+
+    불러오기는 on_change 콜백으로 파싱 데이터를 session_state에 저장하고,
+    다음 렌더링 사이클 시작 시(_init_tbm_state) 위젯 렌더링 이전에 적용합니다.
+    """
     import json
 
     with st.expander("💾 모델 저장 / 불러오기", expanded=False):
@@ -325,31 +346,33 @@ def _render_save_load(model: "TBMModel") -> None:
         # ── 불러오기(Import) ──────────────────────────────────────────
         with col_load:
             st.markdown("**📥 불러오기 (Import)**")
-            st.caption("저장된 JSON 파일을 선택하면 모델을 복원합니다.")
-            uploaded = st.file_uploader(
+            st.caption("JSON 파일을 선택하면 자동으로 모델을 복원합니다.")
+
+            def _on_upload():
+                """파일 업로드 시 즉시 파싱하여 pending 상태로 저장."""
+                f = st.session_state.get("tbm_upload_json")
+                if f is None:
+                    return
+                try:
+                    f.seek(0)
+                    st.session_state["tbm_pending_load"] = json.load(f)
+                    st.session_state.pop("tbm_load_error", None)
+                except Exception as e:
+                    st.session_state["tbm_load_error"] = str(e)
+
+            st.file_uploader(
                 "JSON 파일 선택",
                 type=["json"],
                 key="tbm_upload_json",
                 label_visibility="collapsed",
+                on_change=_on_upload,
             )
-            if uploaded is not None:
-                if st.button("모델 불러오기 ▶", key="tbm_load_json_btn",
-                             use_container_width=True):
-                    try:
-                        uploaded.seek(0)
-                        data = json.load(uploaded)
-                        new_model = TBMModel.from_dict(data)
-                        _set_model(new_model)
-                        _sync_model_widgets(new_model)
-                        st.success(
-                            f"✅ 모델 복원 완료 — "
-                            f"{len(new_model.sites)}개 Site, "
-                            f"{len(new_model.states)}개 State, "
-                            f"{len(new_model.hoppings)}개 Hopping"
-                        )
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"불러오기 오류: {e}")
+
+        # 결과 메시지 표시
+        if ok_msg := st.session_state.pop("tbm_load_ok", None):
+            st.success(ok_msg)
+        if err_msg := st.session_state.pop("tbm_load_error", None):
+            st.error(f"불러오기 오류: {err_msg}")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -423,33 +446,51 @@ def render_tbm_main(k_path_type, custom_points, n_k, show_2d, n_k_2d):
     selected_hop = st.session_state.get("selected_hop_uid")
 
     with diag_col:
-        st.markdown("#### TBM Diagram")
-        html_data = generate_pyvis_html(
-            model, color_mgr=color_mgr,
-            selected_hop_uid=selected_hop,
-            layout_mode=layout_mode,
-        )
-        
-        if pyvis_interaction:
-            clicked_element = pyvis_interaction(html=html_data, height=520, key="pyvis_diagram")
-            if clicked_element:
-                ts = clicked_element.get("ts", 0)
-                if ts != st.session_state.get("last_pyvis_click_ts"):
-                    st.session_state["last_pyvis_click_ts"] = ts
-                    uid = clicked_element.get("id")
-                    c_type = clicked_element.get("type")
-                    
-                    if c_type == "node":
-                        if any(s.uid == uid for s in model.states):
-                            st.session_state["selected_state_uid"] = uid
-                            st.session_state["scroll_to"] = "edit-state"
-                    elif c_type == "edge":
-                        if any(h.uid == uid for h in model.hoppings):
-                            st.session_state["selected_hop_uid"] = uid
-                            st.session_state["scroll_to"] = "edit-hopping"
-                    st.rerun()
+        if layout_mode == "real_space":
+            # ── Real Space Lattice (Plotly 산점도) ──────────────────
+            st.markdown("#### Real Space Lattice")
+            n_cells = st.slider(
+                "표시 단위셀 수 (±N 방향)",
+                min_value=1, max_value=5, value=2,
+                key="tbm_n_cells",
+                help="원점 기준 ±N 방향으로 격자를 확장합니다. 값이 클수록 더 많은 이미지 셀이 표시됩니다.",
+            )
+            site_color_map = {
+                site.uid: SITE_COLORS[i % len(SITE_COLORS)]
+                for i, site in enumerate(model.sites)
+            }
+            if model.states:
+                fig_rs = generate_real_space_figure(
+                    model, n_cells=n_cells, site_color_map=site_color_map
+                )
+                st.plotly_chart(fig_rs, use_container_width=True, key="tbm_real_space_plot")
+            else:
+                st.info("State를 추가하면 격자 구조가 여기에 표시됩니다.")
         else:
-            components.html(html_data, height=520)
+            # ── Physics 모드 (PyVis 인터랙티브 그래프) ──────────────
+            st.markdown("#### TBM Diagram")
+            html_data = generate_pyvis_html(
+                model, color_mgr=color_mgr, selected_hop_uid=selected_hop
+            )
+            if pyvis_interaction:
+                clicked_element = pyvis_interaction(html=html_data, height=520, key="pyvis_diagram")
+                if clicked_element:
+                    ts = clicked_element.get("ts", 0)
+                    if ts != st.session_state.get("last_pyvis_click_ts"):
+                        st.session_state["last_pyvis_click_ts"] = ts
+                        uid = clicked_element.get("id")
+                        c_type = clicked_element.get("type")
+                        if c_type == "node":
+                            if any(s.uid == uid for s in model.states):
+                                st.session_state["selected_state_uid"] = uid
+                                st.session_state["scroll_to"] = "edit-state"
+                        elif c_type == "edge":
+                            if any(h.uid == uid for h in model.hoppings):
+                                st.session_state["selected_hop_uid"] = uid
+                                st.session_state["scroll_to"] = "edit-hopping"
+                        st.rerun()
+            else:
+                components.html(html_data, height=520)
 
     with matrix_col:
         st.markdown("#### $H(\\mathbf{k})$ — Color-coded Matrix")
