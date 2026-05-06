@@ -165,10 +165,20 @@ def render_tbm_sidebar():
             site_opts = {s.name: s for s in model.sites}
             sel_site_name = st.selectbox("Site", list(site_opts.keys()), key="new_state_site")
             sel_orbital = st.selectbox("Orbital", ORBITAL_OPTIONS, key="new_state_orbital")
+            if sel_orbital == "custom":
+                custom_orbital_name = st.text_input(
+                    "Custom Orbital 이름",
+                    key="new_state_custom_orbital",
+                    placeholder="예: p_+, d_{x^2-y^2}, p_x + ip_y",
+                    help="다이어그램 라벨과 행렬 표시에 그대로 사용됩니다.",
+                )
+                actual_orbital = custom_orbital_name.strip() or "custom"
+            else:
+                actual_orbital = sel_orbital
             sel_spin = st.selectbox("Spin", SPIN_OPTIONS, key="new_state_spin")
             if st.button("State 추가", key="add_state_btn", use_container_width=True):
                 model.add_state(State(
-                    site=site_opts[sel_site_name], orbital=sel_orbital, spin=sel_spin,
+                    site=site_opts[sel_site_name], orbital=actual_orbital, spin=sel_spin,
                 ))
                 st.rerun()
 
@@ -323,13 +333,27 @@ def render_tbm_main(k_path_type, custom_points, n_k, show_2d, n_k_2d):
         st.button("📂 로드", key="tbm_load_preset", use_container_width=True, on_click=load_preset_callback)
 
     # ── Diagram + H(k) preview ────────────────────────────────────────
+    # 배치 모드 선택: 물리 엔진(자유 배치) ↔ 실제 격자(고정 좌표)
+    layout_mode = st.radio(
+        "다이어그램 배치 모드",
+        options=["physics", "real_space"],
+        format_func=lambda x: "⚛️ 물리 엔진 (Physics)" if x == "physics" else "🔷 실제 격자 (Real Space)",
+        horizontal=True,
+        key="tbm_layout_mode",
+        help="Physics: 노드가 자유롭게 이동합니다. Real Space: 격자 벡터 기준 실제 좌표에 노드를 고정합니다.",
+    )
+
     diag_col, matrix_col = st.columns([6, 4])
 
     selected_hop = st.session_state.get("selected_hop_uid")
 
     with diag_col:
         st.markdown("#### TBM Diagram")
-        html_data = generate_pyvis_html(model, color_mgr=color_mgr, selected_hop_uid=selected_hop)
+        html_data = generate_pyvis_html(
+            model, color_mgr=color_mgr,
+            selected_hop_uid=selected_hop,
+            layout_mode=layout_mode,
+        )
         
         if pyvis_interaction:
             clicked_element = pyvis_interaction(html=html_data, height=520, key="pyvis_diagram")
@@ -547,8 +571,11 @@ def render_tbm_main(k_path_type, custom_points, n_k, show_2d, n_k_2d):
                 site_opts = {s.name: s for s in model.sites}
                 cur_site_idx = list(site_opts.keys()).index(state.site.name) \
                     if state.site.name in site_opts else 0
-                cur_orb_idx = ORBITAL_OPTIONS.index(state.orbital) \
-                    if state.orbital in ORBITAL_OPTIONS else 0
+                # 현재 orbital이 표준 목록에 없으면 "custom" 인덱스로 fallback
+                is_custom_orbital = state.orbital not in ORBITAL_OPTIONS
+                cur_orb_idx = (ORBITAL_OPTIONS.index("custom")
+                               if is_custom_orbital
+                               else ORBITAL_OPTIONS.index(state.orbital))
                 cur_spin_idx = SPIN_OPTIONS.index(state.spin) \
                     if state.spin in SPIN_OPTIONS else 0
                 with st.form("edit_state_form"):
@@ -562,10 +589,23 @@ def render_tbm_main(k_path_type, custom_points, n_k, show_2d, n_k_2d):
                     with sc3:
                         new_spin = st.selectbox(
                             "Spin", SPIN_OPTIONS, index=cur_spin_idx)
+                    # "custom" 선택 시 텍스트 입력창 표시
+                    if new_orbital == "custom":
+                        # form 내부이므로 기존 custom 이름을 기본값으로 표시
+                        init_custom = state.orbital if is_custom_orbital else ""
+                        custom_orb_edit = st.text_input(
+                            "Custom Orbital 이름",
+                            value=init_custom,
+                            placeholder="예: p_+, d_{x^2-y^2}, p_x + ip_y",
+                            help="다이어그램 라벨과 행렬 표시에 그대로 사용됩니다.",
+                        )
+                        actual_new_orbital = custom_orb_edit.strip() or "custom"
+                    else:
+                        actual_new_orbital = new_orbital
                     if st.form_submit_button("✅ State 수정 적용",
                                               use_container_width=True):
                         state.site = site_opts[new_site_name]
-                        state.orbital = new_orbital
+                        state.orbital = actual_new_orbital
                         state.spin = new_spin
                         st.rerun()
 
