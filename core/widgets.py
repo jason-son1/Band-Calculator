@@ -3,11 +3,12 @@ Synchronized numeric input widgets supporting symbolic expressions.
 
 `numeric_expr_input` renders a trio (expression text + slider + number_input)
 where the expression text is the source of truth. Users can type "sqrt(3)",
-"pi/4", "2*sin(0.3)", etc. — these are evaluated to float by the existing
-parser. Dragging the slider or editing the number replaces the expression
-with a numeric literal.
+"pi/4", "2*sin(0.3)", "1+2*I" etc.
 
-복소수(예: 1+2*I)가 평가되면 슬라이더/숫자 입력창을 숨기고 텍스트 입력창만 유지합니다.
+복소수 값이 평가되면:
+  - 슬라이더/단일 숫자 입력 대신 Re(실수부) + Im(허수부) 숫자 입력으로 전환
+  - 수식 텍스트 입력은 계속 유지 (고급 표현식 직접 입력 가능)
+  - Re/Im 입력 변경 시 수식을 "{re}+{im}*I" 형태로 자동 재조합
 """
 from __future__ import annotations
 
@@ -18,8 +19,15 @@ from core.parser import eval_constant_expression
 
 def _fmt_float(v: float) -> str:
     """Compact float → string (drops trailing zeros)."""
-    s = f"{v:.6g}"
-    return s
+    return f"{v:.6g}"
+
+
+def _complex_to_expr(re: float, im: float) -> str:
+    """Re/Im 값 → 수식 문자열. 예: 1.0, 0+2*I, 1.5-0.3*I"""
+    if im == 0.0:
+        return _fmt_float(re)
+    sign = "+" if im >= 0 else ""
+    return f"{_fmt_float(re)}{sign}{_fmt_float(im)}*I"
 
 
 def numeric_expr_input(
@@ -37,28 +45,20 @@ def numeric_expr_input(
     """
     Synchronized expression / slider / number input.
 
-    Args:
-        label: Display label.
-        key: Base session_state key. Must be unique per widget instance.
-        default_expr: Initial expression string when key not in session_state.
-        min_v, max_v, step: Slider/number input range and step.
-        fmt: Number input display format.
-        show_slider: Whether to render the slider column.
-        show_label: Whether to render the text label above the row.
-        help: Optional tooltip.
+    실수이면: 수식 텍스트 + 슬라이더(선택) + 숫자 입력
+    복소수이면: 수식 텍스트 + Re 숫자 입력 + Im 숫자 입력
 
     Returns:
-        (expression_string, evaluated_value).
-        값이 복소수이면 슬라이더와 숫자 입력창은 숨겨지고 텍스트 입력창만 표시됩니다.
-        On parse error, the value falls back to the last successfully evaluated
-        value (or 0.0 on first failure), and the expression text is preserved
-        verbatim so the user can fix the typo.
+        (expression_string, evaluated_value)  — value는 float 또는 complex.
     """
-    expr_key = f"{key}__expr"
-    slider_key = f"{key}__slider"
-    num_key = f"{key}__num"
+    expr_key      = f"{key}__expr"
+    slider_key    = f"{key}__slider"
+    num_key       = f"{key}__num"
     last_good_key = f"{key}__last_float"
+    re_key        = f"{key}__re"
+    im_key        = f"{key}__im"
 
+    # ── 초기화 ──────────────────────────────────────────────────────
     if expr_key not in st.session_state:
         st.session_state[expr_key] = default_expr
         try:
@@ -66,67 +66,122 @@ def numeric_expr_input(
         except ValueError:
             v0 = 0.0
         st.session_state[last_good_key] = v0
-        # 복소수이면 slider/num은 placeholder 0.0으로 초기화
         if isinstance(v0, complex):
+            st.session_state[re_key]     = v0.real
+            st.session_state[im_key]     = v0.imag
             st.session_state[slider_key] = 0.0
-            st.session_state[num_key] = 0.0
+            st.session_state[num_key]    = 0.0
         else:
-            st.session_state[slider_key] = max(min_v, min(max_v, float(v0)))
-            st.session_state[num_key] = float(v0)
+            fv = float(v0)
+            st.session_state[re_key]     = fv
+            st.session_state[im_key]     = 0.0
+            st.session_state[slider_key] = max(min_v, min(max_v, fv))
+            st.session_state[num_key]    = fv
 
+    # ── 콜백 ────────────────────────────────────────────────────────
     def _on_expr_change():
         s = st.session_state[expr_key]
         try:
             v = eval_constant_expression(s)
             st.session_state[last_good_key] = v
             if isinstance(v, complex):
-                # 복소수: slider/num 상태는 그대로 유지
-                pass
+                st.session_state[re_key] = v.real
+                st.session_state[im_key] = v.imag
             else:
-                st.session_state[slider_key] = max(min_v, min(max_v, float(v)))
-                st.session_state[num_key] = float(v)
+                fv = float(v)
+                st.session_state[re_key]     = fv
+                st.session_state[im_key]     = 0.0
+                st.session_state[slider_key] = max(min_v, min(max_v, fv))
+                st.session_state[num_key]    = fv
         except ValueError:
-            # leave slider/num as-is; expression text stays so user can fix
             pass
 
     def _on_slider_change():
         v = float(st.session_state[slider_key])
         st.session_state[last_good_key] = v
-        st.session_state[expr_key] = _fmt_float(v)
-        st.session_state[num_key] = v
+        st.session_state[expr_key]      = _fmt_float(v)
+        st.session_state[num_key]       = v
+        st.session_state[re_key]        = v
+        st.session_state[im_key]        = 0.0
 
     def _on_num_change():
         v = float(st.session_state[num_key])
         st.session_state[last_good_key] = v
-        st.session_state[expr_key] = _fmt_float(v)
-        st.session_state[slider_key] = max(min_v, min(max_v, v))
+        st.session_state[expr_key]      = _fmt_float(v)
+        st.session_state[slider_key]    = max(min_v, min(max_v, v))
+        st.session_state[re_key]        = v
+        st.session_state[im_key]        = 0.0
 
+    def _on_re_change():
+        re = float(st.session_state.get(re_key, 0.0))
+        im = float(st.session_state.get(im_key, 0.0))
+        s  = _complex_to_expr(re, im)
+        st.session_state[expr_key]      = s
+        st.session_state[last_good_key] = complex(re, im) if im != 0.0 else re
+
+    def _on_im_change():
+        re = float(st.session_state.get(re_key, 0.0))
+        im = float(st.session_state.get(im_key, 0.0))
+        s  = _complex_to_expr(re, im)
+        st.session_state[expr_key]      = s
+        st.session_state[last_good_key] = complex(re, im) if im != 0.0 else re
+
+    # ── 레이블 ──────────────────────────────────────────────────────
     if show_label:
-        st.markdown(f"**{label}**" + (f"  &nbsp;_{help}_" if help else ""),
-                    unsafe_allow_html=True)
+        st.markdown(
+            f"**{label}**" + (f"  &nbsp;_{help}_" if help else ""),
+            unsafe_allow_html=True,
+        )
 
-    # 현재 저장된 값이 복소수인지 확인
-    last_good = st.session_state.get(last_good_key, 0.0)
+    last_good      = st.session_state.get(last_good_key, 0.0)
     is_complex_val = isinstance(last_good, complex)
 
+    # ── 렌더링 ──────────────────────────────────────────────────────
     if is_complex_val:
-        # 복소수 모드: 텍스트 입력창만 표시
+        # 복소수 모드: 수식 입력 + Re/Im 분리 숫자 입력
         st.text_input(
             "수식" if show_label else label,
             key=expr_key,
             on_change=_on_expr_change,
             label_visibility="collapsed" if show_label else "visible",
-            placeholder="예: 1+2*I, exp(I*pi/4)",
+            placeholder="예: 1+2*I, I*0.5, exp(I*pi/4)",
         )
+        col_re, col_im = st.columns(2)
+        with col_re:
+            st.number_input(
+                "Re (실수부)",
+                key=re_key,
+                step=float(step),
+                format=fmt,
+                on_change=_on_re_change,
+            )
+        with col_im:
+            st.number_input(
+                "Im (허수부)",
+                key=im_key,
+                step=float(step),
+                format=fmt,
+                on_change=_on_im_change,
+            )
+
+        # 현재 수식 재평가 및 동기화
         expr_str = st.session_state[expr_key]
         try:
             value = eval_constant_expression(expr_str)
             st.session_state[last_good_key] = value
+            if isinstance(value, complex):
+                st.session_state[re_key] = value.real
+                st.session_state[im_key] = value.imag
         except ValueError as e:
             value = st.session_state.get(last_good_key, 0.0)
-            st.caption(f":red[수식 오류: {e}]  (이전 값 {value} 사용)")
-        if isinstance(value, complex):
-            st.caption(f":blue[복소수: {value}]  (슬라이더 비활성화)")
+            st.caption(f":red[수식 오류: {e}]")
+
+        re_v = st.session_state.get(re_key, 0.0)
+        im_v = st.session_state.get(im_key, 0.0)
+        st.caption(
+            f":blue[복소수 모드] — 값: **{re_v:g}{'+' if im_v >= 0 else ''}{im_v:g}i**"
+            f"  |  실수 복귀: 수식에 실수값 입력 (예: `1.0`)"
+        )
         return expr_str, value
 
     # 실수 모드: 기존 레이아웃 (텍스트 + 슬라이더 + 숫자)
@@ -142,7 +197,7 @@ def numeric_expr_input(
             key=expr_key,
             on_change=_on_expr_change,
             label_visibility="collapsed" if show_label else "visible",
-            placeholder="예: sqrt(3), pi/4, 1.5",
+            placeholder="예: sqrt(3), pi/4, 1+2*I",
         )
 
     if col_slider is not None:
@@ -169,12 +224,12 @@ def numeric_expr_input(
             label_visibility="collapsed",
         )
 
-    # Validate current expression and surface error inline
+    # 현재 수식 재평가 + 인라인 오류 표시
     expr_str = st.session_state[expr_key]
     try:
         value = eval_constant_expression(expr_str)
         st.session_state[last_good_key] = value
-        # 실수 모드 중 복소수로 변경된 경우: 다음 렌더링 사이클에서 자동 전환됨
+        # 이번 렌더에서 복소수로 전환된 경우 다음 사이클에서 자동으로 복소수 모드로 전환됨
     except ValueError as e:
         value = float(st.session_state.get(last_good_key, 0.0))
         st.caption(f":red[수식 오류: {e}]  (이전 값 {value:g} 사용)")
@@ -185,15 +240,14 @@ def numeric_expr_input(
 def reset_numeric_expr_input(key: str, new_expr: str) -> None:
     """
     Force-reset a numeric_expr_input back to a new expression.
-
-    Useful when a preset is loaded and we need to overwrite all the linked
-    widget states (expr / slider / num). Must be called BEFORE the widgets
-    render in the same script run.
+    프리셋·JSON 로드 시 사용. 위젯 렌더링 이전에 호출해야 합니다.
     """
-    expr_key = f"{key}__expr"
-    slider_key = f"{key}__slider"
-    num_key = f"{key}__num"
+    expr_key      = f"{key}__expr"
+    slider_key    = f"{key}__slider"
+    num_key       = f"{key}__num"
     last_good_key = f"{key}__last_float"
+    re_key        = f"{key}__re"
+    im_key        = f"{key}__im"
 
     st.session_state[expr_key] = new_expr
     try:
@@ -202,9 +256,13 @@ def reset_numeric_expr_input(key: str, new_expr: str) -> None:
         v = 0.0
     st.session_state[last_good_key] = v
     if isinstance(v, complex):
-        # 복소수이면 slider/num은 placeholder로만 설정
+        st.session_state[re_key]     = v.real
+        st.session_state[im_key]     = v.imag
         st.session_state[slider_key] = 0.0
-        st.session_state[num_key] = 0.0
+        st.session_state[num_key]    = 0.0
     else:
-        st.session_state[slider_key] = float(v)
-        st.session_state[num_key] = float(v)
+        fv = float(v)
+        st.session_state[re_key]     = fv
+        st.session_state[im_key]     = 0.0
+        st.session_state[slider_key] = fv
+        st.session_state[num_key]    = fv

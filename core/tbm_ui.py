@@ -245,9 +245,11 @@ def render_tbm_sidebar():
             labels = list(state_opts.keys())
             h_src = st.selectbox("Source State", labels, key="new_hop_src")
             h_tgt = st.selectbox("Target State", labels, key="new_hop_tgt")
-            h_amp = st.text_input("Amplitude (scalar)", value="1.0",
-                                  help="실수/복소수. 예: t, 1.5, t1*exp(I*phi)",
-                                  key="new_hop_amp")
+            h_amp = st.text_input(
+                "Amplitude (scalar)", value="1.0",
+                help="실수 또는 복소수 수식. 예: `t`, `1.5`, `I*t`, `t*exp(I*phi)`, `1+2*I`  ←  I = 허수 단위",
+                key="new_hop_amp",
+            )
             h_amp_matrix = ""
             if model.basis_config.spin_enabled:
                 h_amp_matrix = st.text_input(
@@ -742,10 +744,13 @@ def render_tbm_main(k_path_type, custom_points, n_k, show_2d, n_k_2d):
         return
 
     # ── Parameter sliders ─────────────────────────────────────────────
-    param_values: dict[str, float] = {}
+    param_values: dict = {}
     if raw_free:
         st.markdown("### 🎛️ Parameter Tuning")
-        st.caption("수식 입력 가능 — 예: `sqrt(3)`, `pi/4`, `2*sin(0.3)`")
+        st.caption(
+            "수식 입력 가능 — 예: `sqrt(3)`, `pi/4`, `1+2*I`  |  "
+            "`I` = 허수 단위 (i = √-1)  |  복소수 입력 시 Re/Im 분리 슬라이더로 자동 전환"
+        )
         for sym in raw_free:
             pname = str(sym)
             _, val = numeric_expr_input(
